@@ -1,0 +1,9 @@
+anthropic
+pandas
+numpy
+yfinance
+vectorbt
+requests
+python-dotenv
+pandas-market-calendars
+scikit-learn
