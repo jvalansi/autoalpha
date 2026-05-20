@@ -1,5 +1,28 @@
 # Implementation Plan
 
+## Prior Art & Design Decisions
+
+We surveyed the two closest existing systems before building:
+
+### RD-Agent (Microsoft)
+Full R&D automation loop integrated with Qlib. Well-implemented core loop and structured `Hypothesis` object (fields: hypothesis, reason, observation, justification, knowledge). However: uses plain time bars (not dollar bars), standard train/val/test splits (not CPCV), IC/Rank-IC evaluation (not deflated Sharpe), no triple-barrier labeling, no meta-labeling. Heavy abstraction (~10 layers of ABC classes) and Docker-based factor execution.
+
+**Borrow:** `Hypothesis` struct design and trace-fed prompt pattern (each round receives full history of prior hypotheses + feedback).  
+**Skip:** Qlib entirely. Use vectorbt with our own data pipeline instead.
+
+### ATLAS (General Intelligence Capital)
+Applies Karpathy-style autoresearch to markets: LLM agents give LONG/SHORT/conviction calls, agent *prompts* are the weights, rolling Sharpe is the loss. Darwinian weighting gives high-performing agents up to 2.5x influence, poor ones silenced to 0.3x. Regime detection via relative performance of short-horizon vs. long-horizon agent cohorts.
+
+Results after 378 days: Financials Sharpe -4.14 → 0.45, EM Sharpe -0.45 → -0.06 (still negative). No overfitting protection.
+
+**Borrow:** Darwinian weighting for the signal library — validated signals that continue performing get higher allocation weight (floor 0.3, ceiling 2.5); decaying signals get reduced. Regime detection via relative weight shifts across signal cohorts (momentum vs. value vs. macro).  
+**Skip:** The "LLMs as analysts" paradigm. We generate quantitative factor code, not qualitative opinions.
+
+### Our Differentiator
+Neither RD-Agent nor ATLAS has statistical rigor against overfitting. Our core differentiator is the CPCV + deflated Sharpe evaluation layer — this is what separates real edges from mined noise.
+
+---
+
 ## Phase 1 — Data Foundation
 Goal: reliable, point-in-time clean data with proper bar construction.
 
@@ -10,36 +33,36 @@ Goal: reliable, point-in-time clean data with proper bar construction.
 - [ ] Tests: verify no look-ahead leakage at data join seams
 
 ## Phase 2 — Labeling & Evaluation Engine
-Goal: correct labeling and statistically honest backtesting.
+Goal: correct labeling and statistically honest backtesting. This is the core differentiator vs. existing systems.
 
 - [ ] `labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
 - [ ] `labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?)
 - [ ] `backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits
-- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio (accounts for number of trials)
+- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio (penalizes for number of trials tested)
 - [ ] `evaluation/regime.py` — regime-conditional performance breakdown (bull/bear/sideways, vol regime)
-- [ ] `evaluation/library.py` — signal library: store validated signals, compute pairwise correlations
+- [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling Sharpe (floor 0.3, ceiling 2.5); pairwise correlation tracking to penalize redundant signals
 
 ## Phase 3 — Seed Strategy (PEAD)
-Goal: validate pipeline end-to-end on a known working hypothesis.
+Goal: validate pipeline end-to-end on a known working hypothesis before running the LLM loop.
 
 - [ ] `strategies/pead.py` — port earnings-trader signal logic into the new framework
 - [ ] Run Phase 1–2 pipeline on PEAD; verify it scores positively with deflated Sharpe
 - [ ] Establish vault holdout (last 2 years of data, never touched until final validation)
 
 ## Phase 4 — LLM Hypothesis Loop
-Goal: automated hypothesis generation and refinement.
+Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
 
-- [ ] `research/prompts.py` — prompt templates for hypothesis generation, result interpretation, refinement
+- [ ] `research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
+- [ ] `research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback
 - [ ] `research/loop.py` — outer loop: generate → evaluate → store → refine
-- [ ] `research/memory.py` — hypothesis library with causal rationales, scores, status
-- [ ] Constraint: each hypothesis must include a written causal mechanism (reject pure curve-fitting)
-- [ ] Logging: track all hypotheses tested, scores, LLM reasoning chains
+- [ ] `research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
+- [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
 ## Phase 5 — Meta-Labeling & Execution
 Goal: improve precision via secondary model; paper trading gate.
 
 - [ ] `labeling/meta_model.py` — train meta-labeling classifier per strategy
-- [ ] `execution/sizer.py` — fractional Kelly bet sizing based on meta-model confidence
+- [ ] `execution/sizer.py` — fractional Kelly bet sizing weighted by Darwinian signal weights and meta-model confidence
 - [ ] `execution/paper.py` — paper trading gate: promising signals → 30-day live sim before any capital
 - [ ] Integration with earnings-trader execution layer (optional)
 
@@ -47,8 +70,8 @@ Goal: improve precision via secondary model; paper trading gate.
 Goal: scheduled runs, monitoring, alerting.
 
 - [ ] Scheduled nightly research loop (new hypotheses + re-evaluate existing library)
-- [ ] Slack notifications for new validated signals, decaying signals, regime changes
-- [ ] Dashboard: signal library scores over time, regime tracker
+- [ ] Slack notifications for new validated signals, decaying signals, regime shifts
+- [ ] Dashboard: signal library Darwinian weights over time, regime tracker
 
 ---
 
@@ -56,9 +79,10 @@ Goal: scheduled runs, monitoring, alerting.
 - Live trading (earnings-trader handles that)
 - Crypto / non-equity markets (out of scope for now)
 - HFT / intraday signals (target holding period: days to weeks)
+- Qualitative LLM analyst opinions (ATLAS paradigm) — we generate quantitative factor code only
 
 ## Key Dependencies
-- `mlfinlab` or manual implementations of AFML concepts
-- `vectorbt` for fast backtesting
+- `vectorbt` for fast backtesting (not Qlib)
 - `anthropic` SDK for LLM loop
 - `pandas-market-calendars` for correct trading day math
+- `mlfinlab` or manual implementations of AFML concepts (CPCV, triple-barrier, deflated Sharpe)
