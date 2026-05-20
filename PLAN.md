@@ -23,9 +23,40 @@ Neither RD-Agent nor ATLAS has statistical rigor against overfitting. Our core d
 
 ---
 
-## Phase 1 — Data Foundation
-Goal: reliable, point-in-time clean data with proper bar construction.
+## Core Architecture
 
+The central design principle is a **pure-function strategy** that runs identically in backtesting, paper trading, and live trading. There is no translation step between research and production.
+
+```
+Strategy(data) → action (target position, e.g. "2% of portfolio in AAPL")
+
+DataProvider (abstract)
+  ├── HistoricalProvider  — replays bars from disk
+  └── LiveProvider        — streams from yfinance / Polygon
+
+Executor (abstract)
+  ├── SimExecutor         — fake fills, tracks P&L in memory
+  └── LiveExecutor        — real broker API
+
+Runner(strategy, data_provider, executor)
+  — backtest:       Runner(strategy, Historical, Sim)
+  — paper trading:  Runner(strategy, Live, Sim)
+  — live trading:   Runner(strategy, Live, Live)
+```
+
+Action is always a **target position** (stateless, portfolio-relative), not an order. The executor converts target → order. This makes strategies composable and executor-agnostic.
+
+Autoalpha's job: generate Strategy → evaluate via Runner(Historical, Sim) → update → repeat. Paper trading and live deployment reuse the same Runner and Strategy with no porting step.
+
+---
+
+## Phase 1 — Core Abstractions + Data Foundation
+Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up clean data.
+
+- [ ] `core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(data) → action`
+- [ ] `core/runner.py` — `Runner` class wiring strategy + provider + executor
+- [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider` implementations
+- [ ] `core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub)
 - [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; add FRED macro fetcher
 - [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold)
 - [ ] `data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
@@ -43,10 +74,10 @@ Goal: correct labeling and statistically honest backtesting. This is the core di
 - [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling Sharpe (floor 0.3, ceiling 2.5); pairwise correlation tracking to penalize redundant signals
 
 ## Phase 3 — Seed Strategy (PEAD)
-Goal: validate pipeline end-to-end on a known working hypothesis before running the LLM loop.
+Goal: validate the full Runner pipeline end-to-end on a known working hypothesis.
 
-- [ ] `strategies/pead.py` — port earnings-trader signal logic into the new framework
-- [ ] Run Phase 1–2 pipeline on PEAD; verify it scores positively with deflated Sharpe
+- [ ] `strategies/pead.py` — implement PEAD as a `Strategy` subclass; same code runs backtest and live
+- [ ] Run `Runner(PEADStrategy, Historical, Sim)` through CPCV; verify positive deflated Sharpe
 - [ ] Establish vault holdout (last 2 years of data, never touched until final validation)
 
 ## Phase 4 — LLM Hypothesis Loop
@@ -54,17 +85,18 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 
 - [ ] `research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
 - [ ] `research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback
-- [ ] `research/loop.py` — outer loop: generate → evaluate → store → refine
+- [ ] `research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine
 - [ ] `research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
 - [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
-## Phase 5 — Meta-Labeling & Execution
-Goal: improve precision via secondary model; paper trading gate.
+## Phase 5 — Meta-Labeling & Deployment
+Goal: improve precision via secondary model; graduate validated strategies to paper then live.
 
 - [ ] `labeling/meta_model.py` — train meta-labeling classifier per strategy
 - [ ] `execution/sizer.py` — fractional Kelly bet sizing weighted by Darwinian signal weights and meta-model confidence
-- [ ] `execution/paper.py` — paper trading gate: promising signals → 30-day live sim before any capital
-- [ ] Integration with earnings-trader execution layer (optional)
+- [ ] Paper trading: `Runner(strategy, Live, Sim)` — no new code, just a different Runner config; run for 30 days before live
+- [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with real broker API
+- [ ] Promotion pipeline: backtest passes → paper 30 days → live (gated on continued Sharpe)
 
 ## Phase 6 — Productionization
 Goal: scheduled runs, monitoring, alerting.
@@ -76,7 +108,6 @@ Goal: scheduled runs, monitoring, alerting.
 ---
 
 ## Non-Goals
-- Live trading (earnings-trader handles that)
 - Crypto / non-equity markets (out of scope for now)
 - HFT / intraday signals (target holding period: days to weeks)
 - Qualitative LLM analyst opinions (ATLAS paradigm) — we generate quantitative factor code only
