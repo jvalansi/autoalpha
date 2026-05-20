@@ -48,15 +48,40 @@ Action is always a **target position** (stateless, portfolio-relative), not an o
 
 Autoalpha's job: generate Strategy → evaluate via Runner(Historical, Sim) → update → repeat. Paper trading and live deployment reuse the same Runner and Strategy with no porting step.
 
+### Strategy Modes
+
+Strategies run in one of two modes, declared via `strategy.mode`:
+
+- **`bar`** — `predict` is called on every bar with the full universe snapshot (e.g. momentum, quality). Input: `dict[ticker, pd.DataFrame]`. Used for cross-sectional ranking strategies.
+- **`event`** — `predict` is called only when a qualifying event is detected (e.g. earnings release, transcript drop). Input: event object. Used for event-driven strategies (PEAD, earnings NLP, earnings revisions). The Runner passes no-ops on non-event bars.
+
+### Portfolio Overlays
+
+Regime/risk overlays (e.g. trend-following scale-down on bearish regime) are not `Strategy` subclasses — they are handled in the `Executor` as a portfolio-level multiplier. This keeps the Strategy interface clean and per-stock. The `SimExecutor` and `LiveExecutor` both accept an optional `overlay` that scales all position targets before execution.
+
+### Seed Strategies (Research Validation Set)
+
+Five strategies covering the breadth of the strategy space, used to validate the interface and evaluation pipeline before the LLM loop runs:
+
+| Strategy | Mode | Edge mechanism | Data source |
+|---|---|---|---|
+| PEAD | event | Analyst underreaction to earnings beats | FMP earnings + yfinance |
+| Momentum (12-1) | bar | Trend persistence across 150yr / 46 countries | yfinance |
+| Earnings NLP | event | Tone/uncertainty in transcripts not priced in | FMP transcripts |
+| Quality factor | bar | Cheap high-quality ignored by market | FMP fundamentals |
+| Earnings revisions | event | Slow analyst estimate updating post-earnings | FMP estimates |
+
+Trend-following implemented as an overlay on the Executor, not a strategy.
+
 ---
 
 ## Phase 1 — Core Abstractions + Data Foundation
 Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up clean data.
 
-- [ ] `core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(data) → action`
-- [ ] `core/runner.py` — `Runner` class wiring strategy + provider + executor
-- [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider` implementations
-- [ ] `core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub)
+- [ ] `core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(data) → dict[str, float]`, `mode: "bar" | "event"`
+- [ ] `core/runner.py` — `Runner` wiring strategy + provider + executor; dispatches bar vs. event mode
+- [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider`; event detection for event-mode strategies
+- [ ] `core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
 - [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; add FRED macro fetcher
 - [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold)
 - [ ] `data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
@@ -73,11 +98,15 @@ Goal: correct labeling and statistically honest backtesting. This is the core di
 - [ ] `evaluation/regime.py` — regime-conditional performance breakdown (bull/bear/sideways, vol regime)
 - [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling Sharpe (floor 0.3, ceiling 2.5); pairwise correlation tracking to penalize redundant signals
 
-## Phase 3 — Seed Strategy (PEAD)
-Goal: validate the full Runner pipeline end-to-end on a known working hypothesis.
+## Phase 3 — Seed Strategies
+Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
 
-- [ ] `strategies/pead.py` — implement PEAD as a `Strategy` subclass; same code runs backtest and live
-- [ ] Run `Runner(PEADStrategy, Historical, Sim)` through CPCV; verify positive deflated Sharpe
+- [ ] `strategies/pead.py` — event mode; port earnings-trader signal logic
+- [ ] `strategies/momentum.py` — bar mode; 12-1 month cross-sectional ranking
+- [ ] `strategies/earnings_nlp.py` — event mode; FMP transcript tone/uncertainty scoring
+- [ ] `strategies/quality.py` — bar mode; ROE + debt + margin composite, quarterly rebalance
+- [ ] `strategies/earnings_revisions.py` — event mode; FMP estimate delta signal
+- [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
 - [ ] Establish vault holdout (last 2 years of data, never touched until final validation)
 
 ## Phase 4 — LLM Hypothesis Loop
