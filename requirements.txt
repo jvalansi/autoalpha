@@ -2,7 +2,7 @@ anthropic
 pandas
 numpy
 yfinance
-vectorbt
+vectorbt==0.26.2
 requests
 python-dotenv
 pandas-market-calendars

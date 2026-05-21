@@ -79,11 +79,13 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 - [ ] `core/runner.py` — `Runner` wiring strategy + provider + executor; calls `predict` on every bar
 - [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider`
 - [ ] `core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
-- [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; add FRED macro fetcher
-- [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold)
+- [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader
+- [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable
 - [ ] `data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
-- [ ] `data/universe.py` — define tradeable universe (S&P 500 constituents, survivorship-bias-aware)
+- [ ] `data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only
 - [ ] Tests: verify no look-ahead leakage at data join seams
+
+> **Data dependency note:** Dollar bar construction requires historical minute OHLCV data. Polygon.io is the required source — confirm a subscription before starting `data/bars.py`. Daily dollar bars (using daily dollar volume) are an acceptable fallback if Polygon is unavailable. FRED macro fetcher is deferred to Phase 4+ when a hypothesis actually requires macro features.
 
 ## Phase 2 — Labeling & Evaluation Engine
 Goal: correct labeling and statistically honest backtesting. This is the core differentiator vs. existing systems.
@@ -154,7 +156,9 @@ Goal: scheduled runs, monitoring, alerting.
 - Qualitative LLM analyst opinions (ATLAS paradigm) — we generate quantitative factor code only
 
 ## Key Dependencies
-- `vectorbt` for fast backtesting (not Qlib)
+- `vectorbt==0.26.2` for fast backtesting (not Qlib); pinned because upstream is unmaintained — author moved to paid `vectorbtpro`
 - `anthropic` SDK for LLM loop
 - `pandas-market-calendars` for correct trading day math
-- `mlfinlab` or manual implementations of AFML concepts (CPCV, triple-barrier, deflated Sharpe)
+- CPCV, triple-barrier, and deflated Sharpe implemented from scratch (López de Prado books/papers as reference); do not depend on `mlfinlab` — largely unmaintained with known bugs in CPCV
+- **Polygon.io** (historical minute OHLCV) — hard dependency for real dollar bars; yfinance only provides ~60 days of minute data
+- **Sharadar via Nasdaq Data Link** (~$40/month) — survivorship-bias-free S&P 500 constituent history for `data/universe.py`

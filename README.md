@@ -31,10 +31,10 @@ autoalpha/
 
 ## Data Sources
 
-- **Prices/volume:** yfinance, Polygon.io
-- **Earnings:** Financial Modeling Prep (FMP)
-- **Macro:** FRED
-- **News sentiment:** GDELT / finviz
+- **Prices/volume (daily):** yfinance
+- **Prices/volume (minute, required for dollar bars):** Polygon.io (hard dependency — yfinance only provides ~60 days of minute history)
+- **Earnings/transcripts/estimates:** Financial Modeling Prep (FMP)
+- **S&P 500 constituent history (survivorship-bias-free):** Sharadar via Nasdaq Data Link (~$40/month)
 
 Reuses data fetchers from [earnings-trader](https://github.com/jvalansi/earnings-trader).
 
