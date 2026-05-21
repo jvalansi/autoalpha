@@ -128,7 +128,7 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 
 - [ ] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
 - [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback
-- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; **sandboxing**: LLM-generated strategy code runs in a Docker container (no network, read-only filesystem, shared results volume for outputs only); subprocess + `ulimit` as dev fallback; closes #6 and #27
+- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; **code isolation**: run generated code in a subprocess with `resource.setrlimit` (CPU time: 60s, memory: 2GB) and an AST import whitelist that blocks `subprocess`, `socket`, `os.system`, `eval`, `exec`; full Docker sandboxing is not warranted for a solo research instance
 - [ ] `autoalpha/research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
 - [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
