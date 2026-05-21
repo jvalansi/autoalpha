@@ -1,6 +1,6 @@
 {
-  "holdout_start": "2024-01-01",
-  "holdout_end": "2025-12-31",
+  "holdout_start": "2024-05-21",
+  "holdout_end": "2026-05-21",
   "locked_at": "2026-05-21",
-  "note": "Never evaluate any strategy against this period until final validation. Enforced in data/fetcher.py."
+  "note": "Never evaluate any strategy against this period until final validation. Enforced in autoalpha/data/fetcher.py."
 }
