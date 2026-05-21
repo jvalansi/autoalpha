@@ -19,8 +19,8 @@ Strategies are validated against a permanently held-out vault dataset the LLM ne
 
 ```
 autoalpha/
-├── data/           # Bar construction, data fetching, point-in-time alignment
-├── features/       # Feature engineering (LLM-generated + curated)
+├── core/           # Strategy/DataProvider/Executor/Runner interfaces
+├── data/           # Bar construction, fetching, features, point-in-time alignment
 ├── labeling/       # Triple-barrier labeling, meta-labeling
 ├── backtest/       # CPCV engine, walk-forward splitter
 ├── evaluation/     # Deflated Sharpe, regime analysis, signal library scoring

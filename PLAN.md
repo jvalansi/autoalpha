@@ -105,7 +105,7 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 - [ ] `labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
 - [ ] `labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?)
 - [ ] `backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits
-- [ ] `evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe
+- [ ] `evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe; fetch FF5 factors from Kenneth French's data library via `pandas_datareader.famafrench.FamaFrenchReader("F-F_Research_Data_5_Factors_2x3_daily")` (daily granularity, free, no API key)
 - [ ] `evaluation/costs.py` — transaction cost model (spread + commission + market impact); deduct from returns before Sharpe computation
 - [ ] `evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns
 - [ ] `evaluation/drawdown.py` — max drawdown computation and hard constraint check

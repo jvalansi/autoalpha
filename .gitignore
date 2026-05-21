@@ -2,7 +2,11 @@
 __pycache__/
 *.pyc
 .DS_Store
-data/*
-!data/__init__.py
+data/**/*.csv
+data/**/*.parquet
+data/**/*.h5
+data/**/*.pkl
+data/**/*.feather
+data/**/*.zip
 *.jsonl
 vault/
