@@ -9,4 +9,5 @@ data/**/*.pkl
 data/**/*.feather
 data/**/*.zip
 *.jsonl
+*.db
 vault/
