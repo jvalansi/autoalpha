@@ -80,7 +80,7 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 - [ ] `autoalpha/core/providers.py` — `HistoricalProvider` and `LiveProvider`
 - [ ] `autoalpha/core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
 - [ ] `autoalpha/data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; **enforce vault holdout**: load `vault_holdout.json` at startup and raise `VaultLeakError` if any requested date range overlaps the holdout window
-- [ ] `autoalpha/data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable
+- [ ] `autoalpha/data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); **fallback to daily bars must log a `DataQualityWarning`** with IID-test stats (ADF p-value, autocorrelation at lag 1) comparing dollar bars vs daily bars so degradation is visible, not silent; daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable; closes #9
 - [ ] `autoalpha/data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
 - [ ] `autoalpha/data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only; **point-in-time join**: for each backtest date `t`, filter Sharadar rows where `date_added <= t` and (`date_removed` is null or `date_removed > t`); use the *effective* index entry date (not the announcement date) to avoid trading on pre-announcement information (closes #25)
 - [ ] **Lock vault holdout** — designate the last 2 years of data as the held-out test set; write the date range to `vault_holdout.json` and never touch it until final validation; do this before any data exploration
@@ -103,10 +103,10 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 ### Tasks
 
 - [ ] `autoalpha/labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
-- [ ] `autoalpha/labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?)
+- [ ] `autoalpha/labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?); **backtest inclusion**: meta-model must be trained on each CPCV fold's in-sample data and applied to that fold's out-of-sample data — never train on the full dataset and apply globally, which would introduce look-ahead; closes #11
 - [ ] `autoalpha/backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits; **purging gap = label horizon h** (max triple-barrier expiry, typically 20 trading days); add an optional embargo of 5 days after the gap to further reduce autocorrelation leakage; both parameters must be matched to each strategy's label horizon at evaluation time (closes #22)
 - [ ] `autoalpha/evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe; fetch FF5 factors from Kenneth French's data library via `pandas_datareader.famafrench.FamaFrenchReader("F-F_Research_Data_5_Factors_2x3_daily")` (daily granularity, free, no API key)
-- [ ] `autoalpha/evaluation/costs.py` — transaction cost model (spread + commission + market impact); deduct from returns before Sharpe computation
+- [ ] `autoalpha/evaluation/costs.py` — transaction cost model; deduct from returns before Sharpe computation; **default parameters**: half-spread 2 bps, commission 0.5 bps, market impact 3 bps (assuming ~10% of daily ADV participation) → **~11 bps total round-trip**; all parameters must be configurable; stress-test seed strategies at 2× base cost; closes #26
 - [ ] `autoalpha/evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns; trial count `T` is loaded from `autoalpha/research/memory.py` (cumulative count of all strategies ever evaluated, including rejected ones); `T` must persist across sessions — never reset (closes #23)
 - [ ] `autoalpha/evaluation/drawdown.py` — max drawdown computation and hard constraint check
 - [ ] `autoalpha/evaluation/marginal.py` — marginal Sharpe contribution to existing portfolio; used once library has >1 strategy
@@ -128,7 +128,7 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 
 - [ ] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
 - [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback
-- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine
+- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; **sandboxing**: LLM-generated strategy code runs in a Docker container (no network, read-only filesystem, shared results volume for outputs only); subprocess + `ulimit` as dev fallback; closes #6 and #27
 - [ ] `autoalpha/research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
 - [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
