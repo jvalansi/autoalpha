@@ -48,12 +48,9 @@ Action is always a **target position** (stateless, portfolio-relative), not an o
 
 Autoalpha's job: generate Strategy → evaluate via Runner(Historical, Sim) → update → repeat. Paper trading and live deployment reuse the same Runner and Strategy with no porting step.
 
-### Strategy Modes
+### Strategy Interface
 
-Strategies run in one of two modes, declared via `strategy.mode`:
-
-- **`bar`** — `predict` is called on every bar with the full universe snapshot (e.g. momentum, quality). Input: `dict[ticker, pd.DataFrame]`. Used for cross-sectional ranking strategies.
-- **`event`** — `predict` is called only when a qualifying event is detected (e.g. earnings release, transcript drop). Input: event object. Used for event-driven strategies (PEAD, earnings NLP, earnings revisions). The Runner passes no-ops on non-event bars.
+`predict(bar_data) → dict[str, float]` is called on every bar for all strategies. Event detection is internal to the strategy — non-event bars return `{}`. No mode distinction in the Runner.
 
 ### Portfolio Overlays
 
@@ -78,9 +75,9 @@ Trend-following implemented as an overlay on the Executor, not a strategy.
 ## Phase 1 — Core Abstractions + Data Foundation
 Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up clean data.
 
-- [ ] `core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(data) → dict[str, float]`, `mode: "bar" | "event"`
-- [ ] `core/runner.py` — `Runner` wiring strategy + provider + executor; dispatches bar vs. event mode
-- [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider`; event detection for event-mode strategies
+- [ ] `core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(bar_data) → dict[str, float]`; event detection is internal to each strategy
+- [ ] `core/runner.py` — `Runner` wiring strategy + provider + executor; calls `predict` on every bar
+- [ ] `core/providers.py` — `HistoricalProvider` and `LiveProvider`
 - [ ] `core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
 - [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; add FRED macro fetcher
 - [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold)
@@ -91,21 +88,36 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 ## Phase 2 — Labeling & Evaluation Engine
 Goal: correct labeling and statistically honest backtesting. This is the core differentiator vs. existing systems.
 
+### Objective Function
+
+A strategy is accepted if and only if:
+
+1. **Marginal alpha Sharpe > 0** — Sharpe computed on Fama-French 5-factor residual returns (alpha), net of transaction costs (~5-10bps per trade baked into returns), evaluated as marginal contribution to the existing portfolio (standalone for the first strategy). Deflated for number of trials tested.
+2. **Max drawdown < threshold** (e.g. 20%) — hard constraint regardless of Sharpe; protects against undeployable loss profiles
+
+No separate beta constraint (captured by FF5 alpha), no separate turnover penalty (baked into net returns), no separate correlation penalty (captured by marginal contribution).
+
+### Tasks
+
 - [ ] `labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
 - [ ] `labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?)
 - [ ] `backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits
-- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio (penalizes for number of trials tested)
+- [ ] `evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe
+- [ ] `evaluation/costs.py` — transaction cost model (spread + commission + market impact); deduct from returns before Sharpe computation
+- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns
+- [ ] `evaluation/drawdown.py` — max drawdown computation and hard constraint check
+- [ ] `evaluation/marginal.py` — marginal Sharpe contribution to existing portfolio; used once library has >1 strategy
 - [ ] `evaluation/regime.py` — regime-conditional performance breakdown (bull/bear/sideways, vol regime)
-- [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling Sharpe (floor 0.3, ceiling 2.5); pairwise correlation tracking to penalize redundant signals
+- [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling alpha Sharpe (floor 0.3, ceiling 2.5)
 
 ## Phase 3 — Seed Strategies
 Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
 
-- [ ] `strategies/pead.py` — event mode; port earnings-trader signal logic
-- [ ] `strategies/momentum.py` — bar mode; 12-1 month cross-sectional ranking
-- [ ] `strategies/earnings_nlp.py` — event mode; FMP transcript tone/uncertainty scoring
-- [ ] `strategies/quality.py` — bar mode; ROE + debt + margin composite, quarterly rebalance
-- [ ] `strategies/earnings_revisions.py` — event mode; FMP estimate delta signal
+- [ ] `strategies/pead.py` — earnings beat + AH confirmation; returns `{}` on non-earnings bars
+- [ ] `strategies/momentum.py` — 12-1 month cross-sectional ranking across universe
+- [ ] `strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring; returns `{}` on non-transcript bars
+- [ ] `strategies/quality.py` — ROE + debt + margin composite; returns `{}` on non-rebalance bars
+- [ ] `strategies/earnings_revisions.py` — FMP estimate delta signal; returns `{}` on non-revision bars
 - [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
 - [ ] Establish vault holdout (last 2 years of data, never touched until final validation)
 
