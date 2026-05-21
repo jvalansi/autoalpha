@@ -75,7 +75,7 @@ Trend-following implemented as an overlay on the Executor, not a strategy.
 ## Phase 1 — Core Abstractions + Data Foundation
 Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up clean data.
 
-- [ ] `autoalpha/core/strategy.py` — abstract `Strategy` base: `fit(data)`, `predict(bar_data) → dict[str, float]`; event detection is internal to each strategy
+- [ ] `autoalpha/core/strategy.py` — abstract `Strategy` base; `fit(data: pd.DataFrame)` called once per CPCV fold on in-sample MultiIndex(date, ticker) data; `predict(bar_data: pd.Series) → dict[str, float]` called on every bar where Series index = ticker and values = OHLCV + features; return values are portfolio fractions (0.02 = 2% long, -0.01 = 1% short, absent = flat); event strategies implement `fit` as no-op; closes #34
 - [ ] `autoalpha/core/runner.py` — `Runner` wiring strategy + provider + executor; calls `predict` on every bar
 - [ ] `autoalpha/core/providers.py` — `HistoricalProvider` and `LiveProvider`
 - [ ] `autoalpha/core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
@@ -102,7 +102,7 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 
 ### Tasks
 
-- [ ] `autoalpha/labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
+- [ ] `autoalpha/labeling/triple_barrier.py` — triple-barrier label generator; **default parameters**: profit-take = 2×ATR(21), stop-loss = 1×ATR(21), time expiry = 20 trading days; ATR on daily close-to-close; all three configurable per strategy (PEAD: 10-day expiry, Momentum: 63-day); closes #33
 - [ ] `autoalpha/labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?); **backtest inclusion**: meta-model must be trained on each CPCV fold's in-sample data and applied to that fold's out-of-sample data — never train on the full dataset and apply globally, which would introduce look-ahead; closes #11
 - [ ] `autoalpha/backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits; **purging gap = label horizon h** (max triple-barrier expiry, typically 20 trading days); add an optional embargo of 5 days after the gap to further reduce autocorrelation leakage; both parameters must be matched to each strategy's label horizon at evaluation time (closes #22)
 - [ ] `autoalpha/evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe; fetch FF5 factors from Kenneth French's data library via `pandas_datareader.famafrench.FamaFrenchReader("F-F_Research_Data_5_Factors_2x3_daily")` (daily granularity, free, no API key)
@@ -110,14 +110,14 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 - [ ] `autoalpha/evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns; trial count `T` is loaded from `autoalpha/research/memory.py` (cumulative count of all strategies ever evaluated, including rejected ones); `T` must persist across sessions — never reset (closes #23)
 - [ ] `autoalpha/evaluation/drawdown.py` — max drawdown computation and hard constraint check
 - [ ] `autoalpha/evaluation/marginal.py` — marginal Sharpe contribution to existing portfolio; used once library has >1 strategy
-- [ ] `autoalpha/evaluation/regime.py` — regime-conditional performance breakdown (bull/bear/sideways, vol regime)
+- [ ] `autoalpha/evaluation/regime.py` — regime-conditional performance breakdown; **trend regime**: bull = SPY 63-day return > +5%, bear < -5%, sideways otherwise; **vol regime**: high = SPY 21-day realized vol > 20% annualized, low otherwise; VIX available via yfinance (`^VIX`) as alternative vol signal; closes #35
 - [ ] `autoalpha/evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on **63-trading-day rolling alpha Sharpe** (≈ 1 quarter; annualized before comparison across strategies); floor 0.3, ceiling 2.5; update trigger: end of each trading day after new returns are available (closes #24)
 
 ## Phase 3 — Seed Strategies
 Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
 
 - [ ] `autoalpha/strategies/pead.py` — earnings beat + AH confirmation; returns `{}` on non-earnings bars
-- [ ] `autoalpha/strategies/momentum.py` — 12-1 month cross-sectional ranking across universe
+- [ ] `autoalpha/strategies/momentum.py` — 12-1 month cross-sectional ranking; signal = cumulative return from `t-252` to `t-21` trading days (skip most recent 21 days to avoid short-term reversal); rank cross-sectionally, long top quintile; rebalance monthly on first trading day; closes #37
 - [ ] `autoalpha/strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring; returns `{}` on non-transcript bars
 - [ ] `autoalpha/strategies/quality.py` — ROE + debt + margin composite; returns `{}` on non-rebalance bars
 - [ ] `autoalpha/strategies/earnings_revisions.py` — FMP estimate delta signal; returns `{}` on non-revision bars
@@ -129,7 +129,7 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 - [ ] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
 - [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback; **LLM output format**: the LLM generates only the `predict(self, bar_data)` method body (not a full class); the harness wraps it in a `Strategy` subclass automatically — this simplifies the subprocess timeout, keeps the interface contract intact, and makes AST validation trivial; closes #31
 - [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; run generated code in a subprocess with a 60s timeout (EC2 instance is itself the sandbox); **budget controls**: `max_iterations=20` per run (default), `max_cost_usd=5.00` per run — track token usage from API responses and stop early if exceeded; log total cost per run; closes #32
-- [ ] `autoalpha/research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
+- [ ] `autoalpha/research/memory.py` — hypothesis library stored in **SQLite** (`research/memory.db`); schema: `hypotheses(id, created_at, status TEXT, sharpe REAL, cost_usd REAL, trial_number INT, hypothesis_json TEXT)`; SQLite enables `SELECT WHERE status='active'` queries without loading full history; `trial_number` is the monotonic counter fed to `evaluation/sharpe.py` as `T`; closes #36
 - [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
 ## Phase 5 — Meta-Labeling & Deployment
