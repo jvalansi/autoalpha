@@ -82,7 +82,7 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 - [ ] `data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader
 - [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable
 - [ ] `data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
-- [ ] `data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only
+- [ ] `data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only; **point-in-time join**: for each backtest date `t`, filter Sharadar rows where `date_added <= t` and (`date_removed` is null or `date_removed > t`); use the *effective* index entry date (not the announcement date) to avoid trading on pre-announcement information (closes #25)
 - [ ] **Lock vault holdout** — designate the last 2 years of data as the held-out test set; write the date range to `vault_holdout.json` and never touch it until final validation; do this before any data exploration
 - [ ] Tests: verify no look-ahead leakage at data join seams
 
@@ -104,14 +104,14 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 
 - [ ] `labeling/triple_barrier.py` — triple-barrier label generator (profit-take, stop-loss, time expiry via ATR)
 - [ ] `labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?)
-- [ ] `backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits
+- [ ] `backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits; **purging gap = label horizon h** (max triple-barrier expiry, typically 20 trading days); add an optional embargo of 5 days after the gap to further reduce autocorrelation leakage; both parameters must be matched to each strategy's label horizon at evaluation time (closes #22)
 - [ ] `evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe; fetch FF5 factors from Kenneth French's data library via `pandas_datareader.famafrench.FamaFrenchReader("F-F_Research_Data_5_Factors_2x3_daily")` (daily granularity, free, no API key)
 - [ ] `evaluation/costs.py` — transaction cost model (spread + commission + market impact); deduct from returns before Sharpe computation
-- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns
+- [ ] `evaluation/sharpe.py` — deflated Sharpe ratio applied to alpha returns; trial count `T` is loaded from `research/memory.py` (cumulative count of all strategies ever evaluated, including rejected ones); `T` must persist across sessions — never reset (closes #23)
 - [ ] `evaluation/drawdown.py` — max drawdown computation and hard constraint check
 - [ ] `evaluation/marginal.py` — marginal Sharpe contribution to existing portfolio; used once library has >1 strategy
 - [ ] `evaluation/regime.py` — regime-conditional performance breakdown (bull/bear/sideways, vol regime)
-- [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on rolling alpha Sharpe (floor 0.3, ceiling 2.5)
+- [ ] `evaluation/library.py` — signal library with Darwinian weights: signals start at 1.0, updated daily on **63-trading-day rolling alpha Sharpe** (≈ 1 quarter; annualized before comparison across strategies); floor 0.3, ceiling 2.5; update trigger: end of each trading day after new returns are available (closes #24)
 
 ## Phase 3 — Seed Strategies
 Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
