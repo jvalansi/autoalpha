@@ -1,9 +1,13 @@
 anthropic
-pandas
-numpy
+pandas<2.0
+numpy<1.24
 yfinance
 vectorbt==0.26.2
 requests
 python-dotenv
 pandas-market-calendars
 scikit-learn
+statsmodels
+scipy
+nasdaq-data-link
+pandas-datareader

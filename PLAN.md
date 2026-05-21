@@ -83,6 +83,7 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 - [ ] `data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable
 - [ ] `data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
 - [ ] `data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only
+- [ ] **Lock vault holdout** — designate the last 2 years of data as the held-out test set; write the date range to `vault_holdout.json` and never touch it until final validation; do this before any data exploration
 - [ ] Tests: verify no look-ahead leakage at data join seams
 
 > **Data dependency note:** Dollar bar construction requires historical minute OHLCV data. Polygon.io is the required source — confirm a subscription before starting `data/bars.py`. Daily dollar bars (using daily dollar volume) are an acceptable fallback if Polygon is unavailable. FRED macro fetcher is deferred to Phase 4+ when a hypothesis actually requires macro features.
@@ -121,7 +122,6 @@ Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipelin
 - [ ] `strategies/quality.py` — ROE + debt + margin composite; returns `{}` on non-rebalance bars
 - [ ] `strategies/earnings_revisions.py` — FMP estimate delta signal; returns `{}` on non-revision bars
 - [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
-- [ ] Establish vault holdout (last 2 years of data, never touched until final validation)
 
 ## Phase 4 — LLM Hypothesis Loop
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
