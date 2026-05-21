@@ -79,8 +79,8 @@ Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up
 - [ ] `autoalpha/core/runner.py` — `Runner` wiring strategy + provider + executor; calls `predict` on every bar
 - [ ] `autoalpha/core/providers.py` — `HistoricalProvider` and `LiveProvider`
 - [ ] `autoalpha/core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar
-- [ ] `autoalpha/data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; **enforce vault holdout**: load `vault_holdout.json` at startup and raise `VaultLeakError` if any requested date range overlaps the holdout window
-- [ ] `autoalpha/data/bars.py` — dollar bar constructor (sample on cumulative dollar volume threshold); requires Polygon.io historical minute data (hard dependency — see note below); **fallback to daily bars must log a `DataQualityWarning`** with IID-test stats (ADF p-value, autocorrelation at lag 1) comparing dollar bars vs daily bars so degradation is visible, not silent; daily dollar bars using daily OHLCV dollar volume are an acceptable starting point if minute data is unavailable; closes #9
+- [ ] `autoalpha/data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; **enforce vault holdout**: load `vault_holdout.json` at startup and raise `VaultLeakError` if any requested date range overlaps the holdout window; **storage format**: all cached data written as Parquet at `data/cache/{ticker}/{year}.parquet`; closes #30
+- [ ] `autoalpha/data/bars.py` — dollar bar constructor; **threshold = ADTV / 50** where ADTV = 63-day trailing average daily dollar volume (Close × Volume from yfinance), recomputed monthly per ticker — targets ~50 bars/trading day; requires Polygon.io historical minute data for real dollar bars; **fallback to daily bars must log a `DataQualityWarning`** with IID-test stats (ADF p-value, autocorrelation at lag 1) so degradation is visible, not silent; closes #9, #28
 - [ ] `autoalpha/data/features.py` — fractional differentiation (implement López de Prado Ch. 5)
 - [ ] `autoalpha/data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only; **point-in-time join**: for each backtest date `t`, filter Sharadar rows where `date_added <= t` and (`date_removed` is null or `date_removed > t`); use the *effective* index entry date (not the announcement date) to avoid trading on pre-announcement information (closes #25)
 - [ ] **Lock vault holdout** — designate the last 2 years of data as the held-out test set; write the date range to `vault_holdout.json` and never touch it until final validation; do this before any data exploration
@@ -127,8 +127,8 @@ Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipelin
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
 
 - [ ] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
-- [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback
-- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; **no special sandboxing needed**: the EC2 instance is itself the sandbox — generated code can't reach local machines, a broker, or any production system; run in a subprocess with a timeout to guard against infinite loops
+- [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback; **LLM output format**: the LLM generates only the `predict(self, bar_data)` method body (not a full class); the harness wraps it in a `Strategy` subclass automatically — this simplifies the subprocess timeout, keeps the interface contract intact, and makes AST validation trivial; closes #31
+- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; run generated code in a subprocess with a 60s timeout (EC2 instance is itself the sandbox); **budget controls**: `max_iterations=20` per run (default), `max_cost_usd=5.00` per run — track token usage from API responses and stop early if exceeded; log total cost per run; closes #32
 - [ ] `autoalpha/research/memory.py` — hypothesis library: scores, status (active/decayed/rejected), LLM reasoning chains
 - [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
 
@@ -136,7 +136,7 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 Goal: improve precision via secondary model; graduate validated strategies to paper then live.
 
 - [ ] `autoalpha/labeling/meta_model.py` — train meta-labeling classifier per strategy
-- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing weighted by Darwinian signal weights and meta-model confidence
+- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing weighted by Darwinian signal weights and meta-model confidence; **Kelly fraction = 0.25** (quarter-Kelly; reduces median drawdown ~75% vs full Kelly); final position = `0.25 × kelly_bet × darwinian_weight × meta_confidence`; hard cap: no single position > 5% of portfolio; closes #29
 - [ ] Paper trading: `Runner(strategy, Live, Sim)` — no new code, just a different Runner config; run for 30 days before live
 - [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with real broker API
 - [ ] Promotion pipeline: backtest passes → paper 30 days → live (gated on continued Sharpe)
