@@ -72,19 +72,23 @@ Trend-following implemented as an overlay on the Executor, not a strategy.
 
 ---
 
-## Phase 1 — Core Abstractions + Data Foundation
+## Phase 1 — Core Abstractions + Data Foundation ✓
 Goal: establish the Strategy/DataProvider/Executor/Runner interfaces and wire up clean data.
 
-- [ ] `autoalpha/core/strategy.py` — abstract `Strategy` base; `fit(data: pd.DataFrame)` called once per CPCV fold on in-sample MultiIndex(date, ticker) data; `predict(bar_data: pd.Series) → dict[str, float]` called on every bar where Series index = ticker and values = OHLCV + features; return values are portfolio fractions (0.02 = 2% long, -0.01 = 1% short, absent = flat); event strategies implement `fit` as no-op; closes #34
-- [ ] `autoalpha/core/runner.py` — `Runner` wiring strategy + provider + executor; **fit calling convention**: at the start of each CPCV fold, Runner calls `strategy.fit(in_sample_df)` once; then calls `strategy.predict(bar_series)` on every out-of-sample bar; for live/paper mode (no folds), `fit` is called once on all available history before the run starts
-- [ ] `autoalpha/core/providers.py` — `HistoricalProvider` and `LiveProvider`
-- [ ] `autoalpha/core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar; **SimExecutor fill model**: fills at next-bar open price (realistic for daily bars); no partial fills; target position → order size = (target_fraction × portfolio_value) / price; transaction costs deducted at fill time using `evaluation/costs.py` defaults
-- [ ] `autoalpha/data/fetcher.py` — wrap FMP + yfinance fetchers from earnings-trader; **enforce vault holdout**: load `vault_holdout.json` at startup and raise `VaultLeakError` if any requested date range overlaps the holdout window; **storage format**: all cached data written as Parquet at `data/cache/{ticker}/{year}.parquet`; closes #30
-- [ ] `autoalpha/data/bars.py` — dollar bar constructor; **threshold = ADTV / 50** where ADTV = 63-day trailing average daily dollar volume (Close × Volume from yfinance), recomputed monthly per ticker — targets ~50 bars/trading day; requires Polygon.io historical minute data for real dollar bars; **fallback to daily bars must log a `DataQualityWarning`** with IID-test stats (ADF p-value, autocorrelation at lag 1) so degradation is visible, not silent; closes #9, #28
-- [ ] `autoalpha/data/features.py` — fractional differentiation (implement López de Prado Ch. 5); **minimum-d search**: grid [0.0, 0.1, …, 1.0], refine to 0.01 around minimum; ADF stationarity threshold p < 0.05; recompute minimum-d per ticker per CPCV fold (d is in-sample; never use full-dataset d in backtest); closes #40
-- [ ] `autoalpha/data/universe.py` — define tradeable universe using **Sharadar via Nasdaq Data Link** (~$40/month) for survivorship-bias-free historical S&P 500 constituent membership; do not use current constituents only; **point-in-time join**: for each backtest date `t`, filter Sharadar rows where `date_added <= t` and (`date_removed` is null or `date_removed > t`); use the *effective* index entry date (not the announcement date) to avoid trading on pre-announcement information (closes #25)
+- [x] `autoalpha/core/strategy.py` — abstract `Strategy` base; `fit(data: pd.DataFrame)` called once per CPCV fold on in-sample MultiIndex(date, ticker) data; `predict(bar_data: pd.DataFrame) → dict[str, float]` called on every bar where DataFrame index = ticker and columns = OHLCV + features; return values are portfolio fractions (0.02 = 2% long, -0.01 = 1% short, absent = flat); event strategies implement `fit` as no-op
+- [x] `autoalpha/core/runner.py` — `Runner` wiring strategy + provider + executor; **fill model**: signals from bar N are executed at bar N+1's open (`prev_targets` pattern — no look-ahead); for CPCV backtests, fold returns sliced to each fold's OOS date range before accumulation (prevents duplicate dates across folds)
+- [x] `autoalpha/core/providers.py` — `HistoricalProvider` (per-year Parquet cache at `data/cache/{ticker}/{year}.parquet`) and `LiveProvider`
+- [x] `autoalpha/core/executors.py` — `SimExecutor` (P&L tracking) and `LiveExecutor` (broker API stub); both accept optional `overlay` scalar; `portfolio_value(prices)` takes current prices to value open positions correctly
+- [x] `autoalpha/data/fetcher.py` — FMP + yfinance fetchers; vault holdout enforced on OHLCV, earnings, fundamentals, **and transcripts**; per-year Parquet cache; `get_fundamentals` returns `roe` and `net_margin` derived columns
+- [x] `autoalpha/data/bars.py` — dollar bar constructor; fallback to daily bars logs `DataQualityWarning` with ADF p-value and lag-1 autocorrelation; **open: ADTV threshold not yet recomputed monthly** (issue #44); Polygon subscription required for real dollar bars
+- [x] `autoalpha/data/features.py` — fractional differentiation (LdP Ch. 5); `MEMORY_CUTOFF=1e-3` (gives windows ≤74 bars for all d, consistent with LdP examples); `fracdiff` window determined by cutoff, not `len(series)`; `find_min_d` grid [0.0, 0.1, …, 1.0] refined to 0.01; d computed per ticker per CPCV fold
+- [x] `autoalpha/data/universe.py` — Sharadar S&P 500 constituent history via Nasdaq Data Link; point-in-time join using effective entry/removal dates; handles tickers with multiple index memberships (removed and re-added)
 - [x] **Lock vault holdout** — `vault_holdout.json` locked: 2024-05-21 to 2026-05-21; never evaluate any strategy against this period until final validation
-- [ ] Tests: verify no look-ahead leakage at data join seams
+- [x] Tests: 22 tests covering interfaces, vault enforcement, fill model correctness, fracdiff causality, dollar bar fallback, no look-ahead at data join seams
+
+**Open items from Phase 1 review (non-blocking for Phase 2):**
+- Issue #44 — Dollar bar ADTV threshold computed once per request; spec calls for monthly recomputation
+- Issue #46 — `_aggregate_dollar_bars` uses `iterrows()`; vectorize before production use
 
 > **Data dependency note:** Dollar bar construction requires historical minute OHLCV data. Polygon.io is the required source — confirm a subscription before starting `data/bars.py`. Daily dollar bars (using daily dollar volume) are an acceptable fallback if Polygon is unavailable. FRED macro fetcher is deferred to Phase 4+ when a hypothesis actually requires macro features.
 
