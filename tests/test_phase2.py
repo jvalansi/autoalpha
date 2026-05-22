@@ -216,6 +216,15 @@ class TestRegime:
         # After warmup, should be bull
         assert "bull" in regime.values
 
+    def test_classify_trend_excludes_warmup(self):
+        from autoalpha.evaluation.regime import classify_trend
+        spy = _make_price_series(150)
+        regime = classify_trend(spy)
+        # First 63 values have no valid 63-day return — should be NaN, not 'sideways'
+        assert regime.iloc[:63].isna().all()
+        # After warmup, all values should be classified
+        assert not regime.iloc[63:].isna().any()
+
     def test_regime_breakdown_structure(self):
         from autoalpha.evaluation.regime import classify_trend, classify_vol, regime_breakdown
 
