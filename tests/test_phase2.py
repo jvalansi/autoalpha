@@ -404,6 +404,19 @@ class TestMetaLabeler:
         proba = ml.predict_proba(features)
         assert (proba == 1.0).all()
 
+    def test_degenerate_all_wrong_fallback_zero(self):
+        """When primary is always wrong, unfitted model should return 0.0 (don't bet)."""
+        from autoalpha.labeling.meta_label import MetaLabeler
+        rng = np.random.default_rng(7)
+        idx = pd.date_range("2020-01-01", periods=50, freq="B")
+        features = pd.DataFrame(rng.standard_normal((50, 2)), index=idx, columns=["f1", "f2"])
+        primary = pd.Series(1, index=idx)   # always +1
+        outcomes = pd.Series(-1, index=idx)  # always wrong
+        ml = MetaLabeler()
+        ml.fit(features, primary, outcomes)
+        proba = ml.predict_proba(features)
+        assert (proba == 0.0).all()
+
     def test_no_lookahead_across_folds(self):
         """OOS predictions must not use any OOS data for fitting."""
         from autoalpha.labeling.meta_label import MetaLabeler
@@ -461,7 +474,7 @@ class TestCPCV:
             assert len(overlap) == 0
 
     def test_purge_creates_gap(self):
-        """No training date within purge_days before any test group start."""
+        """No training date within purge_days business days before any test group start."""
         from autoalpha.backtest.cpcv import CPCV
         purge = 20
         # Use n_test_splits=1 for a clean contiguous test region
@@ -469,9 +482,9 @@ class TestCPCV:
         dates = self._make_dates(600)
         for train_dates, test_dates in cpcv.split(dates):
             test_start = test_dates.min()
-            # No training date should fall in [test_start - purge, test_start]
+            # No training date should fall in [test_start - 20 BDay, test_start]
             too_close = train_dates[
-                (train_dates >= test_start - pd.Timedelta(days=purge))
+                (train_dates >= test_start - pd.offsets.BDay(purge))
                 & (train_dates <= test_start)
             ]
             assert len(too_close) == 0

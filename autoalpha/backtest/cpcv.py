@@ -68,8 +68,8 @@ class CPCV:
             end = (start + group_size) if g < self.n_splits - 1 else n
             groups[start:end] = g
 
-        purge_td = pd.Timedelta(days=self.purge_days)
-        embargo_td = pd.Timedelta(days=self.embargo_days)
+        purge_td = pd.offsets.BDay(self.purge_days)
+        embargo_td = pd.offsets.BDay(self.embargo_days)
 
         for test_groups in itertools.combinations(range(self.n_splits), self.n_test_splits):
             test_mask = np.isin(groups, test_groups)

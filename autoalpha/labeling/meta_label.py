@@ -38,6 +38,7 @@ class MetaLabeler:
         )
         self._scaler = StandardScaler()
         self._fitted = False
+        self._fallback_proba = 1.0  # overridden if fit sees degenerate labels
 
     # ------------------------------------------------------------------
     # Training
@@ -81,6 +82,7 @@ class MetaLabeler:
         meta_label = (np.sign(primary.values) == np.sign(outcome.values)).astype(int)
 
         if meta_label.sum() == 0 or (1 - meta_label).sum() == 0:
+            self._fallback_proba = float(meta_label.mean())
             logger.warning("Degenerate meta-labels (all one class) — skipping fit")
             return self
 
@@ -99,7 +101,7 @@ class MetaLabeler:
         Falls back to 1.0 (full bet) when not fitted.
         """
         if not self._fitted:
-            return pd.Series(1.0, index=features.index)
+            return pd.Series(self._fallback_proba, index=features.index)
 
         X_scaled = self._scaler.transform(features.values)
         proba = self._clf.predict_proba(X_scaled)  # type: ignore[union-attr]

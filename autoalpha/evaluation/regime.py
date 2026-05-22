@@ -50,20 +50,24 @@ def _fetch_spy(start: date, end: date) -> pd.Series:
 
 
 def classify_trend(spy_close: pd.Series) -> pd.Series:
-    """Return daily trend regime: 'bull', 'bear', or 'sideways'."""
+    """Return daily trend regime: 'bull', 'bear', or 'sideways'. NaN during warm-up."""
     ret = spy_close.pct_change(_TREND_WINDOW)
-    regime = pd.Series("sideways", index=ret.index, dtype=object)
-    regime[ret > _BULL_THRESH] = "bull"
-    regime[ret < _BEAR_THRESH] = "bear"
+    regime = pd.Series(None, index=ret.index, dtype=object)
+    valid = ~ret.isna()
+    regime[valid & (ret > _BULL_THRESH)] = "bull"
+    regime[valid & (ret < _BEAR_THRESH)] = "bear"
+    regime[valid & (ret >= _BEAR_THRESH) & (ret <= _BULL_THRESH)] = "sideways"
     return regime
 
 
 def classify_vol(spy_close: pd.Series) -> pd.Series:
-    """Return daily vol regime: 'high' or 'low'."""
+    """Return daily vol regime: 'high' or 'low'. NaN during warm-up."""
     daily_ret = spy_close.pct_change()
     realized_vol = daily_ret.rolling(_VOL_WINDOW).std() * (252**0.5)
-    regime = pd.Series("low", index=realized_vol.index, dtype=object)
-    regime[realized_vol > _HIGH_VOL_THRESH] = "high"
+    regime = pd.Series(None, index=realized_vol.index, dtype=object)
+    valid = ~realized_vol.isna()
+    regime[valid & (realized_vol > _HIGH_VOL_THRESH)] = "high"
+    regime[valid & (realized_vol <= _HIGH_VOL_THRESH)] = "low"
     return regime
 
 
