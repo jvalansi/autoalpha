@@ -109,7 +109,11 @@ class EarningsNLPStrategy(Strategy):
         tickers = data.index.get_level_values("ticker").unique().tolist()
         dates = data.index.get_level_values("date")
         start_year = dates.min().year
-        end_year = dates.max().year
+        end_date = dates.max()
+        end_year = end_date.year
+        # Fetch only complete quarters to avoid vault overlap from future quarter-end dates.
+        # (month-1)//3 gives: Jan-Mar→0, Apr-Jun→1, Jul-Sep→2, Oct-Dec→3
+        last_complete_quarter = (end_date.month - 1) // 3
 
         if not self._api_key:
             logger.warning("FMP_API_KEY not set — EarningsNLP will produce no signals")
@@ -118,7 +122,8 @@ class EarningsNLPStrategy(Strategy):
         for ticker in tickers:
             ticker_scores: dict[tuple, float] = {}
             for year in range(start_year, end_year + 1):
-                for quarter in range(1, 5):
+                max_q = last_complete_quarter if year == end_year else 4
+                for quarter in range(1, max_q + 1):
                     try:
                         text = get_transcripts(
                             ticker, year, quarter, api_key=self._api_key

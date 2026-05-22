@@ -92,8 +92,9 @@ class SimExecutor(Executor):
 
     def returns(self) -> pd.Series:
         if len(self._nav_history) < 2:
-            return pd.Series(dtype=float)
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
         nav = pd.Series(self._nav_history).sort_index()
+        nav.index = pd.to_datetime(nav.index)
         return nav.pct_change().dropna()
 
     def nav_series(self) -> pd.Series:
