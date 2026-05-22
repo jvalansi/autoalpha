@@ -22,11 +22,11 @@ class Strategy(ABC):
         """
 
     @abstractmethod
-    def predict(self, bar_data: pd.Series) -> dict[str, float]:
+    def predict(self, bar_data: pd.DataFrame) -> dict[str, float]:
         """Return target position fractions for the current bar.
 
-        bar_data: Series with MultiIndex (ticker,) or flat index of OHLCV+features
-                  per ticker — caller stacks tickers into rows; column names match fit().
+        bar_data: DataFrame with index=ticker, columns=OHLCV+features (same columns as fit()).
+                  One row per ticker in the universe.
         Returns: {ticker: fraction} where 0.02 = 2% long, -0.01 = 1% short.
                  Absent tickers → flat (no position change required by caller).
         Non-event bars must return {}.

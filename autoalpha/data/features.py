@@ -28,13 +28,20 @@ def _get_weights(d: float, size: int) -> np.ndarray:
 
 
 def fracdiff(series: pd.Series, d: float) -> pd.Series:
-    """Apply fractional differencing with order d, dropping NaNs at the head."""
+    """Apply fractional differencing with order d, dropping NaNs at the head.
+
+    The window width is determined by MEMORY_CUTOFF, not by len(series).
+    If the series is shorter than the window, an empty Series is returned.
+    For d=0.4 the window is ~1459 bars; use in-sample series of at least
+    that length, or increase MEMORY_CUTOFF to trade off memory vs. window size.
+    """
     if d == 0:
         return series.copy()
     if d == 1:
         return series.diff().dropna()
 
-    weights = _get_weights(d, len(series))
+    # Use a large cap so MEMORY_CUTOFF (not len(series)) determines window width.
+    weights = _get_weights(d, max(len(series), 10_000))
     width = len(weights)
     result = {}
     idx = series.index
