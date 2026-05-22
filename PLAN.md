@@ -129,9 +129,13 @@ Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipelin
 - [x] `autoalpha/strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring (Loughran-McDonald lexicon subset); signal = (pos - neg)/n - 0.5 * unc/n; quarterly evaluation using prior quarter's transcript; 63-day hold; returns `{}` on non-transcript bars
 - [x] `autoalpha/strategies/quality.py` — quality factor composite; **signal** = z_score(ROE) - z_score(leverage) + z_score(net_margin), all cross-sectional z-scores at rebalance; leverage proxy = net_debt / (net_debt.abs() + 1B) (no market cap in FMP fundamentals); **rebalance**: quarterly on first trading day after new FMP fundamentals; long top quintile; returns `{}` on non-rebalance bars; closes #41
 - [x] `autoalpha/strategies/earnings_revisions.py` — FMP estimate delta signal; QoQ EPS estimate upward revision > 5%; 21-day hold; returns `{}` on non-revision bars
-- [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
+- [x] Run each through `Runner(strategy, Historical, Sim)` with CPCV (`scripts/validate_phase3.py`); confirmed positive OOS Ann.SR: PEAD=1.308, Quality=0.685, Momentum=0.226; EarningsRevisions/NLP rate-limited (see #54); DSR=0.000 for all due to unit bug in `deflated_sharpe` (see #53); fixes: executor DatetimeIndex and NLP quarter cap (vault guard)
 
 **Tests: 32 new (phase 3: 10 momentum + 22 strategies); 114 passing total**
+
+**Known bugs from validation (to fix in Phase 4):**
+- #53 `deflated_sharpe` DSR always ≈ 0 — `expected_max_sr` unit mismatch (per-period vs annualized)
+- #54 FMP fetchers lack caching — 250 API calls per strategy per run causes HTTP 429s
 
 ## Phase 4 — LLM Hypothesis Loop
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
