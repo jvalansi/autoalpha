@@ -81,10 +81,14 @@ class SimExecutor(Executor):
         nav_after = self._compute_nav(prices)
         self._nav_history[bar_date] = nav_after
 
-    def portfolio_value(self) -> float:
-        return self._cash + sum(
-            shares * 0.0 for shares in self._positions.values()
+    def portfolio_value(self, prices: dict[str, float] | None = None) -> float:
+        if prices is None:
+            prices = {}
+        equity = sum(
+            shares * prices.get(ticker, 0.0)
+            for ticker, shares in self._positions.items()
         )
+        return self._cash + equity
 
     def returns(self) -> pd.Series:
         if len(self._nav_history) < 2:

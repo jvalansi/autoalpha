@@ -114,6 +114,12 @@ def get_transcripts(
     api_key: Optional[str] = None,
 ) -> str:
     """Return earnings call transcript text from FMP."""
+    # Approximate the transcript date as the last day of the quarter for vault check.
+    _quarter_end = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    month, day = _quarter_end[quarter]
+    approx_date = date(year, month, day)
+    _check_vault(approx_date, approx_date)
+
     key = api_key or os.environ.get("FMP_API_KEY", "")
     if not key:
         raise EnvironmentError("FMP_API_KEY not set")

@@ -231,10 +231,8 @@ def test_aggregate_dollar_bars_threshold():
 # ---------------------------------------------------------------------------
 
 def test_no_lookahead_in_provider_bars():
-    """HistoricalProvider.bars() must yield data in chronological order
-    and each bar's date must not precede the preceding bar's date."""
+    """HistoricalProvider.bars() must yield data in strict chronological order."""
     provider = HistoricalProvider.__new__(HistoricalProvider)
-    # Inject a synthetic history
     dates = pd.date_range("2022-01-01", periods=20, freq="B")
     tickers = ["A", "B"]
     idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
@@ -245,16 +243,45 @@ def test_no_lookahead_in_provider_bars():
     )
 
     with patch.object(provider, "history", return_value=data):
-        bar_dates = [
-            bd for bd, _ in provider.bars.__wrapped__(provider, tickers, dates[0].date(), dates[-1].date())
-        ] if hasattr(provider.bars, "__wrapped__") else []
+        yielded = list(provider.bars(tickers, dates[0].date(), dates[-1].date()))
 
-    # Direct iteration check
-    prev = None
-    for bd, _ in HistoricalProvider._yield_from_df(data) if hasattr(HistoricalProvider, "_yield_from_df") else []:
-        if prev is not None:
-            assert bd >= prev
-        prev = bd
+    assert len(yielded) == len(dates), "Expected one bar per trading date"
+    bar_dates = [bd for bd, _ in yielded]
+    assert bar_dates == sorted(bar_dates), "Bars must be yielded in chronological order"
+    # Each yielded DataFrame must only contain the tickers for that date (no future data)
+    for bd, bar_df in yielded:
+        assert list(bar_df.index) == tickers, "Each bar must contain exactly the expected tickers"
+        assert "Close" in bar_df.columns
+
+
+def test_vault_transcript_raises_in_window():
+    """get_transcripts must raise VaultLeakError for quarters within the vault window."""
+    from autoalpha.data.fetcher import get_transcripts
+    with pytest.raises(VaultLeakError):
+        get_transcripts("AAPL", 2025, 1)  # Q1 2025 ends 2025-03-31, inside vault
+
+
+def test_vault_transcript_ok_before_window():
+    """get_transcripts must not raise VaultLeakError for quarters before the vault."""
+    from autoalpha.data.fetcher import get_transcripts
+    try:
+        get_transcripts("AAPL", 2023, 4)  # Q4 2023 ends 2023-12-31, before vault
+    except VaultLeakError:
+        pytest.fail("VaultLeakError raised for pre-vault transcript")
+    except Exception:
+        pass  # network / API key errors are OK in unit tests
+
+
+def test_sim_executor_portfolio_value_includes_equity():
+    """portfolio_value must reflect open positions at provided prices."""
+    ex = SimExecutor(initial_capital=100_000, cost_bps=0)
+    prices = {"AAPL": 100.0}
+    ex.execute({"AAPL": 0.5}, date(2023, 1, 3), prices)
+    # Bought 500 shares at $100; portfolio_value without prices should not count equity
+    pv_no_prices = ex.portfolio_value()  # prices unknown → equity = 0
+    pv_with_prices = ex.portfolio_value(prices)
+    assert pv_with_prices > pv_no_prices, "portfolio_value with prices must exceed cash-only value"
+    assert abs(pv_with_prices - 100_000) < 1.0  # NAV should be ~100k (no cost)
 
 
 def test_fracdiff_no_future_leakage():

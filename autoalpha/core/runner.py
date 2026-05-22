@@ -53,13 +53,13 @@ class Runner:
             in_sample = self._provider.history(self._tickers, in_start, in_end)
             self._strategy.fit(in_sample)
 
-            prev_prices: dict[str, float] = {}
+            prev_targets: dict[str, float] = {}
             for bar_date, bar_df in self._provider.bars(self._tickers, oos_start, oos_end):
-                prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
-                targets = self._strategy.predict(bar_df)
-                if targets and prev_prices:
-                    self._executor.execute(targets, bar_date, prev_prices)
-                prev_prices = bar_df["Close"].to_dict() if "Close" in bar_df.columns else {}
+                open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
+                # Execute previous bar's signals at today's open (next-bar fill model)
+                if prev_targets and open_prices:
+                    self._executor.execute(prev_targets, bar_date, open_prices)
+                prev_targets = self._strategy.predict(bar_df)
 
             fold_returns = self._executor.returns()
             if not fold_returns.empty:
@@ -75,10 +75,9 @@ class Runner:
         self._strategy.fit(history)
         logger.info("Strategy fitted on %d bars", len(history))
 
-        prev_prices: dict[str, float] = {}
+        prev_targets: dict[str, float] = {}
         for bar_date, bar_df in self._provider.bars(self._tickers, history_end, date.today()):
-            prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
-            targets = self._strategy.predict(bar_df)
-            if targets and prev_prices:
-                self._executor.execute(targets, bar_date, prev_prices)
-            prev_prices = bar_df["Close"].to_dict() if "Close" in bar_df.columns else {}
+            open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
+            if prev_targets and open_prices:
+                self._executor.execute(prev_targets, bar_date, open_prices)
+            prev_targets = self._strategy.predict(bar_df)
