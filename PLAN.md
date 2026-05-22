@@ -106,7 +106,7 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 
 ### Tasks
 
-- [x] `autoalpha/labeling/triple_barrier.py` — triple-barrier label generator; **default parameters**: profit-take = 2×ATR(21), stop-loss = 1×ATR(21), time expiry = 20 trading days; ATR on daily close-to-close; all three configurable per strategy (PEAD: 10-day expiry, Momentum: 63-day); closes #33; **open: #49** (entry price convention — event-bar close vs. next-bar open, must be resolved in Phase 3 strategy implementations)
+- [x] `autoalpha/labeling/triple_barrier.py` — triple-barrier label generator; **default parameters**: profit-take = 2×ATR(21), stop-loss = 1×ATR(21), time expiry = 20 trading days; ATR on daily close-to-close; all three configurable per strategy (PEAD: 10-day expiry, Momentum: 63-day); closes #33, #49; **fixed**: added optional `entry_prices` parameter — strategies that fill at next-bar open pass their actual fill prices; falls back to `close[event_date]` when absent
 - [x] `autoalpha/labeling/meta_label.py` — secondary labeling layer (did the primary signal actually work?); **backtest inclusion**: meta-model must be trained on each CPCV fold's in-sample data and applied to that fold's out-of-sample data — never train on the full dataset and apply globally, which would introduce look-ahead; closes #11; **fixed**: degenerate fallback now returns 0.0 when all primary signals are wrong (was incorrectly returning 1.0)
 - [x] `autoalpha/backtest/cpcv.py` — Combinatorial Purged Cross-Validation splits; **purging gap = label horizon h** (max triple-barrier expiry, typically 20 trading days); add an optional embargo of 5 days after the gap to further reduce autocorrelation leakage; both parameters must be matched to each strategy's label horizon at evaluation time (closes #22); **fixed**: purge/embargo gap now uses `pd.offsets.BDay` (trading days) instead of `pd.Timedelta` (calendar days) — the prior code only purged ~14 trading days for a 20-day label horizon; **open: #51** (`to_runner_folds` drops purge metadata, must be resolved before Phase 4 Runner integration)
 - [x] `autoalpha/evaluation/alpha.py` — Fama-French 5-factor regression; compute alpha return series and residual Sharpe; fetch FF5 factors from Kenneth French's data library via `pandas_datareader.famafrench.FamaFrenchReader("F-F_Research_Data_5_Factors_2x3_daily")` (daily granularity, free, no API key)
@@ -119,15 +119,19 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 
 **Tests: 52 passing (phase 2 only); 82 passing (phases 1 + 2 combined)**
 
+**Interface change (Phase 3):** `Strategy.predict(bar_data, bar_date=None)` — added optional `bar_date: pd.Timestamp` parameter; Runner passes it on every bar. All strategies must accept it. Backward-compatible (default=None).
+
 ## Phase 3 — Seed Strategies
 Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
 
 - [ ] `autoalpha/strategies/pead.py` — earnings beat + AH confirmation; **beat definition**: EPS actual > EPS consensus AND revenue actual > revenue consensus (both must beat; source: FMP earnings endpoint); **AH confirmation**: after-hours close ≥ 1% above prior regular-session close; **entry**: next regular-session open; **hold**: 10 trading days; triple-barrier expiry = 10 days, loose barriers (3×ATR profit, 1.5×ATR stop); reuse earnings-trader fetcher logic; returns `{}` on non-earnings bars; closes #38
-- [ ] `autoalpha/strategies/momentum.py` — 12-1 month cross-sectional ranking; signal = cumulative return from `t-252` to `t-21` trading days (skip most recent 21 days to avoid short-term reversal); rank cross-sectionally, long top quintile; rebalance monthly on first trading day; closes #37
+- [x] `autoalpha/strategies/momentum.py` — 12-1 month cross-sectional ranking; signal = cumulative return from `t-252` to `t-21` trading days (skip most recent 21 days to avoid short-term reversal); rank cross-sectionally, long top quintile; rebalance monthly on first trading day; seeds price buffer from `fit()` for immediate warmup; closes #37
 - [ ] `autoalpha/strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring; returns `{}` on non-transcript bars
 - [ ] `autoalpha/strategies/quality.py` — quality factor composite; **signal** = z_score(ROE) - z_score(leverage) + z_score(net_margin), all cross-sectional z-scores at rebalance; leverage = net_debt / (net_debt + market_cap); **rebalance**: quarterly on first trading day after new FMP fundamentals; long top quintile; returns `{}` on non-rebalance bars; closes #41
 - [ ] `autoalpha/strategies/earnings_revisions.py` — FMP estimate delta signal; returns `{}` on non-revision bars
 - [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
+
+**Tests: 10 new (phase 3 momentum + entry_prices); 92 passing total**
 
 ## Phase 4 — LLM Hypothesis Loop
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
