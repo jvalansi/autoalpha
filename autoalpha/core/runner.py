@@ -59,7 +59,7 @@ class Runner:
                 # Execute previous bar's signals at today's open (next-bar fill model)
                 if prev_targets and open_prices:
                     self._executor.execute(prev_targets, bar_date, open_prices)
-                prev_targets = self._strategy.predict(bar_df)
+                prev_targets = self._strategy.predict(bar_df, bar_date=bar_date)
 
             # Slice to this fold's OOS period — executor accumulates across folds
             all_fold_returns = self._executor.returns()
@@ -86,4 +86,4 @@ class Runner:
             open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
             if prev_targets and open_prices:
                 self._executor.execute(prev_targets, bar_date, open_prices)
-            prev_targets = self._strategy.predict(bar_df)
+            prev_targets = self._strategy.predict(bar_df, bar_date=bar_date)

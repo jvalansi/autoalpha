@@ -28,7 +28,7 @@ class _BuyAndHold(Strategy):
     def fit(self, data: pd.DataFrame) -> None:
         self._tickers = data.index.get_level_values("ticker").unique().tolist() if "ticker" in data.index.names else []
 
-    def predict(self, bar_data: pd.DataFrame) -> dict[str, float]:
+    def predict(self, bar_data: pd.DataFrame, bar_date=None) -> dict[str, float]:
         tickers = list(bar_data.index)
         if not tickers:
             return {}
