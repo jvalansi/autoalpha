@@ -49,33 +49,43 @@ def get_ohlcv(
     end: date,
     cache_dir: Path = _CACHE_ROOT,
 ) -> pd.DataFrame:
-    """Return OHLCV DataFrame indexed by date. Raises VaultLeakError on overlap."""
+    """Return OHLCV DataFrame indexed by date. Raises VaultLeakError on overlap.
+
+    Cache layout: data/cache/{ticker}/{year}.parquet — one file per calendar year.
+    """
     _check_vault(start, end)
 
-    cache_path = cache_dir / ticker / f"{start.year}_{end.year}.parquet"
-    if cache_path.exists():
-        df = pd.read_parquet(cache_path)
-        mask = (df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))
-        cached = df[mask]
-        if not cached.empty:
-            return cached
+    ticker_dir = cache_dir / ticker
+    ticker_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for year in range(start.year, end.year + 1):
+        cache_path = ticker_dir / f"{year}.parquet"
+        if cache_path.exists():
+            df_year = pd.read_parquet(cache_path)
+        else:
+            year_start = date(year, 1, 1)
+            year_end = date(year, 12, 31)
+            tk = yf.Ticker(ticker)
+            df_year = tk.history(
+                start=year_start.isoformat(),
+                end=(year_end + timedelta(days=1)).isoformat(),
+                interval="1d",
+                auto_adjust=True,
+            )
+            if df_year.empty:
+                frames.append(pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"]))
+                continue
+            df_year = df_year[["Open", "High", "Low", "Close", "Volume"]]
+            df_year.index = pd.to_datetime(df_year.index).tz_localize(None).normalize()
+            df_year.index.name = "date"
+            df_year.to_parquet(cache_path)
+        frames.append(df_year)
 
-    tk = yf.Ticker(ticker)
-    df = tk.history(
-        start=start.isoformat(),
-        end=(end + timedelta(days=1)).isoformat(),
-        interval="1d",
-        auto_adjust=True,
-    )
-    if df.empty:
+    if not frames:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-    df = df[["Open", "High", "Low", "Close", "Volume"]]
-    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-    df.index.name = "date"
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(cache_path)
-    return df
+    df = pd.concat(frames).sort_index()
+    mask = (df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))
+    return df[mask]
 
 
 def get_earnings(
@@ -164,5 +174,10 @@ def get_fundamentals(
     bal_df = pd.DataFrame(balance)[["date", "totalStockholdersEquity", "netDebt"]]
     df = inc_df.merge(bal_df, on="date", how="inner")
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+    df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))].copy()
+    # Derived ratios used by the quality strategy (quality.py)
+    equity = df["totalStockholdersEquity"].replace(0, float("nan"))
+    df["roe"] = df["netIncome"] / equity
+    revenue = df["revenue"].replace(0, float("nan"))
+    df["net_margin"] = df["netIncome"] / revenue
     return df.reset_index(drop=True)

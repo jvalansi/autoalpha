@@ -57,24 +57,36 @@ class HistoricalProvider(DataProvider):
             yield bar_date, bar_df
 
     def _fetch_ticker(self, ticker: str, start: date, end: date) -> pd.DataFrame:
-        cache_path = self._cache_dir / ticker / f"{start.year}_{end.year}.parquet"
-        if cache_path.exists():
-            df = pd.read_parquet(cache_path)
-            mask = (df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))
-            return df[mask]
-
-        tk = yf.Ticker(ticker)
-        df = tk.history(start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
-                        interval="1d", auto_adjust=True)
-        if df.empty:
-            return df
-        df = df[["Open", "High", "Low", "Close", "Volume"]]
-        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-        df.index.name = "date"
-
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(cache_path)
-        return df
+        """Fetch OHLCV for ticker, using per-year Parquet cache files."""
+        ticker_dir = self._cache_dir / ticker
+        ticker_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for year in range(start.year, end.year + 1):
+            cache_path = ticker_dir / f"{year}.parquet"
+            if cache_path.exists():
+                df_year = pd.read_parquet(cache_path)
+            else:
+                year_start = date(year, 1, 1)
+                year_end = date(year, 12, 31)
+                tk = yf.Ticker(ticker)
+                df_year = tk.history(
+                    start=year_start.isoformat(),
+                    end=(year_end + timedelta(days=1)).isoformat(),
+                    interval="1d",
+                    auto_adjust=True,
+                )
+                if df_year.empty:
+                    continue
+                df_year = df_year[["Open", "High", "Low", "Close", "Volume"]]
+                df_year.index = pd.to_datetime(df_year.index).tz_localize(None).normalize()
+                df_year.index.name = "date"
+                df_year.to_parquet(cache_path)
+            frames.append(df_year)
+        if not frames:
+            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+        df = pd.concat(frames).sort_index()
+        mask = (df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))
+        return df[mask]
 
 
 class LiveProvider(DataProvider):
