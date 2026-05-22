@@ -12,7 +12,8 @@ def max_drawdown(returns: pd.Series) -> float:
     """
     if returns.empty:
         return 0.0
-    nav = (1 + returns).cumprod()
+    # Prepend NAV=1.0 so initial losses are captured (not just peak-to-trough within series)
+    nav = pd.concat([pd.Series([1.0]), (1 + returns).cumprod()])
     rolling_max = nav.cummax()
     drawdowns = (nav - rolling_max) / rolling_max
     return float(-drawdowns.min())

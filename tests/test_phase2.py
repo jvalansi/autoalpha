@@ -84,10 +84,17 @@ class TestDrawdown:
         assert passes_drawdown_constraint(rets, threshold=0.25)
 
     def test_passes_constraint_false(self):
-        from autoalpha.evaluation.drawdown import passes_drawdown_constraint
-        # NAV: 0.8 → 0.64 → 0.512; max_dd = (1-0.512)/1 = 48.8% > 25%
+        from autoalpha.evaluation.drawdown import passes_drawdown_constraint, max_drawdown
+        # NAV: 1.0 → 0.8 → 0.64 → 0.512; max_dd = (1-0.512)/1 = 48.8% > 25%
         rets = pd.Series([-0.2, -0.2, -0.2, 0.01, 0.01])
         assert not passes_drawdown_constraint(rets, threshold=0.25)
+        assert abs(max_drawdown(rets) - 0.488) < 0.001
+
+    def test_initial_loss_captured(self):
+        from autoalpha.evaluation.drawdown import max_drawdown
+        # Series starts with a 20% loss then recovers — drawdown from initial capital must be 20%
+        rets = pd.Series([-0.2, 0.5])
+        assert abs(max_drawdown(rets) - 0.2) < 1e-6
 
 
 # ---------------------------------------------------------------------------
