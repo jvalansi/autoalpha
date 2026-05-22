@@ -60,13 +60,13 @@ Regime/risk overlays (e.g. trend-following scale-down on bearish regime) are not
 
 Five strategies covering the breadth of the strategy space, used to validate the interface and evaluation pipeline before the LLM loop runs:
 
-| Strategy | Mode | Edge mechanism | Data source |
-|---|---|---|---|
-| PEAD | event | Analyst underreaction to earnings beats | FMP earnings + yfinance |
-| Momentum (12-1) | bar | Trend persistence across 150yr / 46 countries | yfinance |
-| Earnings NLP | event | Tone/uncertainty in transcripts not priced in | FMP transcripts |
-| Quality factor | bar | Cheap high-quality ignored by market | FMP fundamentals |
-| Earnings revisions | event | Slow analyst estimate updating post-earnings | FMP estimates |
+| Strategy | Edge mechanism | Data source |
+|---|---|---|
+| PEAD | Analyst underreaction to earnings beats | FMP earnings + yfinance |
+| Momentum (12-1) | Trend persistence across 150yr / 46 countries | yfinance |
+| Earnings NLP | Tone/uncertainty in transcripts not priced in | FMP transcripts |
+| Quality factor | Cheap high-quality ignored by market | FMP fundamentals |
+| Earnings revisions | Slow analyst estimate updating post-earnings | FMP estimates |
 
 Trend-following implemented as an overlay on the Executor, not a strategy.
 
