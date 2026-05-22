@@ -14,7 +14,11 @@ import pandas as pd
 from statsmodels.tsa.stattools import adfuller
 
 ADF_THRESHOLD = 0.05
-MEMORY_CUTOFF = 1e-5  # truncate weights below this value
+# Truncate fractional-diff weights below this value.
+# 1e-5 requires >4000 bars for d=0.1; 1e-3 gives windows ≤74 bars for all d,
+# which is practical for typical CPCV in-sample periods. Consistent with
+# LdP AFML examples that use 1e-3.
+MEMORY_CUTOFF = 1e-3
 
 
 def _get_weights(d: float, size: int) -> np.ndarray:
@@ -41,6 +45,7 @@ def fracdiff(series: pd.Series, d: float) -> pd.Series:
         return series.diff().dropna()
 
     # Use a large cap so MEMORY_CUTOFF (not len(series)) determines window width.
+    # With MEMORY_CUTOFF=1e-3 all windows are ≤74 bars; 10_000 is a safe upper bound.
     weights = _get_weights(d, max(len(series), 10_000))
     width = len(weights)
     result = {}
