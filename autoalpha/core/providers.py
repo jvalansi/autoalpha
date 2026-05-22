@@ -84,7 +84,6 @@ class LiveProvider(DataProvider):
         return HistoricalProvider().history(tickers, start, end)
 
     def bars(self, tickers: list[str], start: date, end: date) -> Iterator[tuple[date, pd.DataFrame]]:
-        end_date = date.today()
         frames = []
         for ticker in tickers:
             tk = yf.Ticker(ticker)
