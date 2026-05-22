@@ -144,6 +144,39 @@ def get_transcripts(
     return data[0].get("content", "")
 
 
+def get_estimates(
+    ticker: str,
+    start: date,
+    end: date,
+    api_key: Optional[str] = None,
+) -> pd.DataFrame:
+    """Return quarterly analyst consensus EPS and revenue estimates from FMP.
+
+    Columns: date, estimatedEpsAvg, estimatedRevenueAvg.
+    """
+    _check_vault(start, end)
+    key = api_key or os.environ.get("FMP_API_KEY", "")
+    if not key:
+        raise EnvironmentError("FMP_API_KEY not set")
+
+    url = f"{FMP_BASE}/analyst-estimates"
+    params = {"symbol": ticker.upper(), "period": "quarterly", "limit": 20, "apikey": key}
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+    if "date" not in df.columns:
+        return pd.DataFrame()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    keep_cols = [c for c in ["date", "estimatedEpsAvg", "estimatedRevenueAvg"] if c in df.columns]
+    df = df[keep_cols]
+    df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+    return df.reset_index(drop=True)
+
+
 def get_fundamentals(
     ticker: str,
     start: date,
