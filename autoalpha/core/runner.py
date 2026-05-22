@@ -61,7 +61,13 @@ class Runner:
                     self._executor.execute(prev_targets, bar_date, open_prices)
                 prev_targets = self._strategy.predict(bar_df)
 
-            fold_returns = self._executor.returns()
+            # Slice to this fold's OOS period — executor accumulates across folds
+            all_fold_returns = self._executor.returns()
+            oos_mask = (
+                (all_fold_returns.index >= pd.Timestamp(oos_start))
+                & (all_fold_returns.index <= pd.Timestamp(oos_end))
+            )
+            fold_returns = all_fold_returns[oos_mask]
             if not fold_returns.empty:
                 all_returns.append(fold_returns)
 

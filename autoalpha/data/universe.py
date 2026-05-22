@@ -45,9 +45,27 @@ def _load_sharadar() -> pd.DataFrame:
     # actions: 'added', 'removed'
     if "action" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-        added = df[df["action"] == "added"][["ticker", "date"]].rename(columns={"date": "date_added"})
-        removed = df[df["action"] == "removed"][["ticker", "date"]].rename(columns={"date": "date_removed"})
-        df = added.merge(removed, on="ticker", how="left")
+        df = df.sort_values(["ticker", "date"])
+        # Pair each 'added' event with the next 'removed' event for that ticker.
+        # A ticker can cycle in/out of the index multiple times; simple merge
+        # produces a Cartesian product in that case.
+        rows = []
+        for ticker, grp in df.groupby("ticker"):
+            adds = grp[grp["action"] == "added"]["date"].tolist()
+            removals = grp[grp["action"] == "removed"]["date"].tolist()
+            rem_iter = iter(removals)
+            next_removal = next(rem_iter, None)
+            for add_date in adds:
+                while next_removal is not None and next_removal <= add_date:
+                    next_removal = next(rem_iter, None)
+                rows.append({
+                    "ticker": ticker,
+                    "date_added": add_date,
+                    "date_removed": next_removal,
+                })
+                if next_removal is not None:
+                    next_removal = next(rem_iter, None)
+        df = pd.DataFrame(rows)
     else:
         df["date_added"] = pd.to_datetime(df.get("date_added", df.get("dateadded"))).dt.normalize()
         df["date_removed"] = pd.to_datetime(df.get("date_removed", df.get("dateremoved"))).dt.normalize()

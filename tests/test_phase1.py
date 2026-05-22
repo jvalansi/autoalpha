@@ -254,6 +254,46 @@ def test_no_lookahead_in_provider_bars():
         assert "Close" in bar_df.columns
 
 
+def test_runner_no_duplicate_returns_across_folds():
+    """run_backtest must return each OOS date exactly once across all folds."""
+    from autoalpha.core.runner import Runner
+    from autoalpha.core.providers import HistoricalProvider
+    from autoalpha.core.executors import SimExecutor
+    from unittest.mock import patch
+
+    provider = HistoricalProvider.__new__(HistoricalProvider)
+    dates = pd.date_range("2021-01-04", periods=40, freq="B")
+    tickers = ["X"]
+    idx = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
+    rng = np.random.default_rng(99)
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, len(dates)))
+    data = pd.DataFrame({
+        "Open": close * 0.995, "High": close * 1.01,
+        "Low": close * 0.99, "Close": close,
+        "Volume": np.ones(len(dates)) * 1e6,
+    }, index=idx)
+
+    with patch.object(provider, "history", return_value=data):
+        with patch.object(provider, "bars", wraps=lambda t, s, e: (
+            (bd, grp.droplevel("date"))
+            for bd, grp in data[
+                (data.index.get_level_values("date") >= pd.Timestamp(s)) &
+                (data.index.get_level_values("date") <= pd.Timestamp(e))
+            ].groupby(level="date")
+        )):
+            strategy = _BuyAndHold()
+            executor = SimExecutor(initial_capital=100_000, cost_bps=0)
+            runner = Runner(strategy, provider, executor, tickers)
+
+            mid = dates[20]
+            folds = [
+                ((dates[0].date(), dates[9].date()), (dates[10].date(), dates[19].date())),
+                ((dates[10].date(), dates[19].date()), (dates[20].date(), dates[29].date())),
+            ]
+            returns = runner.run_backtest(folds)
+            assert returns.index.is_unique, "run_backtest must not produce duplicate dates across folds"
+
+
 def test_vault_transcript_raises_in_window():
     """get_transcripts must raise VaultLeakError for quarters within the vault window."""
     from autoalpha.data.fetcher import get_transcripts
