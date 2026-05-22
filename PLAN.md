@@ -124,14 +124,14 @@ No separate beta constraint (captured by FF5 alpha), no separate turnover penalt
 ## Phase 3 — Seed Strategies
 Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipeline end-to-end and confirm the interface handles both modes cleanly.
 
-- [ ] `autoalpha/strategies/pead.py` — earnings beat + AH confirmation; **beat definition**: EPS actual > EPS consensus AND revenue actual > revenue consensus (both must beat; source: FMP earnings endpoint); **AH confirmation**: after-hours close ≥ 1% above prior regular-session close; **entry**: next regular-session open; **hold**: 10 trading days; triple-barrier expiry = 10 days, loose barriers (3×ATR profit, 1.5×ATR stop); reuse earnings-trader fetcher logic; returns `{}` on non-earnings bars; closes #38
+- [x] `autoalpha/strategies/pead.py` — earnings beat + AH confirmation; **beat definition**: EPS actual > EPS consensus AND revenue actual > revenue consensus (both must beat; source: FMP earnings endpoint); **AH confirmation**: after-hours close ≥ 1% above prior regular-session close; **entry**: next regular-session open; **hold**: 10 trading days; triple-barrier expiry = 10 days, loose barriers (3×ATR profit, 1.5×ATR stop); reuse earnings-trader fetcher logic; returns `{}` on non-earnings bars; closes #38
 - [x] `autoalpha/strategies/momentum.py` — 12-1 month cross-sectional ranking; signal = cumulative return from `t-252` to `t-21` trading days (skip most recent 21 days to avoid short-term reversal); rank cross-sectionally, long top quintile; rebalance monthly on first trading day; seeds price buffer from `fit()` for immediate warmup; closes #37
-- [ ] `autoalpha/strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring; returns `{}` on non-transcript bars
-- [ ] `autoalpha/strategies/quality.py` — quality factor composite; **signal** = z_score(ROE) - z_score(leverage) + z_score(net_margin), all cross-sectional z-scores at rebalance; leverage = net_debt / (net_debt + market_cap); **rebalance**: quarterly on first trading day after new FMP fundamentals; long top quintile; returns `{}` on non-rebalance bars; closes #41
-- [ ] `autoalpha/strategies/earnings_revisions.py` — FMP estimate delta signal; returns `{}` on non-revision bars
+- [x] `autoalpha/strategies/earnings_nlp.py` — FMP transcript tone/uncertainty scoring (Loughran-McDonald lexicon subset); signal = (pos - neg)/n - 0.5 * unc/n; quarterly evaluation using prior quarter's transcript; 63-day hold; returns `{}` on non-transcript bars
+- [x] `autoalpha/strategies/quality.py` — quality factor composite; **signal** = z_score(ROE) - z_score(leverage) + z_score(net_margin), all cross-sectional z-scores at rebalance; leverage proxy = net_debt / (net_debt.abs() + 1B) (no market cap in FMP fundamentals); **rebalance**: quarterly on first trading day after new FMP fundamentals; long top quintile; returns `{}` on non-rebalance bars; closes #41
+- [x] `autoalpha/strategies/earnings_revisions.py` — FMP estimate delta signal; QoQ EPS estimate upward revision > 5%; 21-day hold; returns `{}` on non-revision bars
 - [ ] Run each through `Runner(strategy, Historical, Sim)` with CPCV; verify deflated Sharpe is positive for at least PEAD and momentum
 
-**Tests: 10 new (phase 3 momentum + entry_prices); 92 passing total**
+**Tests: 32 new (phase 3: 10 momentum + 22 strategies); 114 passing total**
 
 ## Phase 4 — LLM Hypothesis Loop
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
