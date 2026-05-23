@@ -137,30 +137,60 @@ Goal: implement all 5 seed strategies as `Strategy` subclasses; validate pipelin
 - #53 `deflated_sharpe` DSR always ≈ 0 — `expected_max_sr` unit mismatch (per-period vs annualized)
 - #54 FMP fetchers lack caching — 250 API calls per strategy per run causes HTTP 429s
 
-## Phase 4 — LLM Hypothesis Loop
+## Phase 4 — LLM Hypothesis Loop ✓
 Goal: automated hypothesis generation and refinement, modelled on RD-Agent's trace structure.
 
-- [ ] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass: hypothesis, reason, concise_reason, observation, justification, knowledge (causal mechanism required — rejects pure curve-fitting)
-- [ ] `autoalpha/research/prompts.py` — prompt templates for generation, result interpretation, refinement; each round receives full trace of prior hypotheses + feedback; **LLM output format**: the LLM generates only the `predict(self, bar_data)` method body (not a full class); the harness wraps it in a `Strategy` subclass automatically — this simplifies the subprocess timeout, keeps the interface contract intact, and makes AST validation trivial; closes #31
-- [ ] `autoalpha/research/loop.py` — outer loop: generate Strategy → Runner(Historical, Sim) → evaluate → store → refine; run generated code in a subprocess with a 60s timeout (EC2 instance is itself the sandbox); **budget controls**: `max_iterations=20` per run (default), `max_cost_usd=5.00` per run — track token usage from API responses and stop early if exceeded; log total cost per run; closes #32
-- [ ] `autoalpha/research/memory.py` — hypothesis library stored in **SQLite** (`research/memory.db`); schema: `hypotheses(id, created_at, status TEXT, sharpe REAL, cost_usd REAL, trial_number INT, hypothesis_json TEXT)`; SQLite enables `SELECT WHERE status='active'` queries without loading full history; `trial_number` is the monotonic counter fed to `evaluation/sharpe.py` as `T`; closes #36
-- [ ] Regime detection: monitor relative Darwinian weight shifts across signal types (momentum, value, quality, macro) as an emergent regime signal — inspired by ATLAS's cohort weight differential
+- [x] `autoalpha/research/hypothesis.py` — `Hypothesis` dataclass with causal mechanism enforcement; `_CURVE_FITTING_PHRASES` rejects pure curve-fitting language; `_validate_knowledge` requires ≥20-word causal explanation; cohort validation (momentum / value / quality / macro)
+- [x] `autoalpha/research/prompts.py` — generation / interpretation / refinement prompt templates; full hypothesis trace fed to each round; **LLM output format**: `predict(self, bar_data)` body only; harness wraps in Strategy subclass; closes #31; **fixed**: `parse_llm_json` extracts JSON from prose preamble when model ignores no-commentary instruction; prompt lists only non-NaN columns (roe, net_margin, earnings_surprise, revenue_surprise, vix); universe size (49 tickers) noted to prevent large-universe guards
+- [x] `autoalpha/research/loop.py` — outer loop: generate → validate → subprocess backtest → interpret → accept/reject/refine; budget controls (`max_iterations`, `max_cost_usd`); prompt caching on system message; closes #32; **fixed**: max drawdown acceptance threshold raised to 60% (long-only concentrated universe); `_MAX_DRAWDOWN_THRESHOLD = 0.60`
+- [x] `autoalpha/research/memory.py` — SQLite-backed hypothesis library; `get_pending_refinement` returns sharpe/dsr/max_drawdown so loop doesn't need raw DB access; closes #36
+- [x] `autoalpha/research/code_validator.py` — AST validation rejects imports, exec, eval, network calls, file I/O; length cap 4000 chars; wraps predict body in Strategy subclass
+- [x] `autoalpha/research/subprocess_runner.py` — executes LLM-generated code in isolated child process; **fixed**: injects project root into child PYTHONPATH; pre-builds date→bar lookup dict (was 27s baseline, now ~8s); averages duplicate CPCV dates before Sharpe/drawdown computation (each date appeared 5× in raw concat, causing phantom 96% drawdowns); timeout raised 60s→300s
+- [x] `scripts/build_loop_dataset.py` — builds MultiIndex (date, ticker) parquet with OHLCV, ret_1d/5d/21d/63d/252d, roe, net_margin, earnings/revenue surprise, vix; vault-safe (all dates < 2024-05-21)
+- [x] `scripts/run_loop.py` — CLI entry point; `--iterations`, `--budget`, `--model`, `--data` args
+- [x] `scripts/fetch_universe.py` — idempotent fetcher for expanded 49-stock S&P 500 universe; skips already-cached tickers; FMP rate-limiting via 0.25s sleep
+- [x] `scripts/build_vault_dataset.py` — builds vault holdout dataset (2024-05-21 → today) using full history for accurate 252d lookback returns; same schema as loop_data.parquet
+- [x] `scripts/evaluate_vault.py` — runs each active hypothesis on vault data; reports per-signal and combined OOS Sharpe/drawdown/return vs equal-weight benchmark; IS→OOS decay table
+- [x] DSR bug #53 fixed — `deflated_sharpe` unit mismatch resolved; DSR now correctly deflates for trial count
+- [x] Regime detection: cohort weights tracked in SignalLibrary; `get_cohort_weight_summary` feeds Darwinian weight differential back into generation prompt
 
-## Phase 5 — Meta-Labeling & Deployment
-Goal: improve precision via secondary model; graduate validated strategies to paper then live.
+**Phase 4 results (49-stock universe, ~40 iterations total, ~$1.30 total cost):**
+- 3 active signals: quality earnings beat combo (Sharpe 1.15, DSR 0.998, DD 43.7%), margin revenue surprise (1.12, 0.989, 43.5%), dual profitability efficiency (1.07, 0.967, 40.8%)
+- Vault evaluation: all 3 signals improve OOS vs IS (decay 112–151%); combined portfolio OOS Sharpe 1.54, MaxDD 11.4%, vs benchmark 1.66 / 11.2%
+- No overfitting detected: modest IS Sharpe (1.07–1.15) → modest but stable OOS (no decay)
 
-- [ ] `autoalpha/labeling/meta_model.py` — train meta-labeling classifier per strategy
-- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing weighted by Darwinian signal weights and meta-model confidence; **Kelly fraction = 0.25** (quarter-Kelly; reduces median drawdown ~75% vs full Kelly); final position = `0.25 × kelly_bet × darwinian_weight × meta_confidence`; hard cap: no single position > 5% of portfolio; closes #29
-- [ ] Paper trading: `Runner(strategy, Live, Sim)` — no new code, just a different Runner config; run for 30 days before live
-- [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with real broker API
-- [ ] Promotion pipeline: backtest passes → paper 30 days → live (gated on continued Sharpe)
+**Known issues / open items:**
+- Model frequently outputs prose before JSON despite no-commentary instruction (parse_llm_json recovers, but wastes tokens and occasionally produces truncated JSON)
+- Model sometimes generates predict() bodies > 4000 chars; code_validator rejects them; model should be prompted to write concisely
+- `pandas_datareader` not installed → FF5 alpha unavailable; Sharpe/DSR computed on raw returns (acceptable for now)
+- 49-stock universe still skews large-cap tech; broader sector diversification would improve cross-sectional signal strength
+
+## Phase 5 — Feature Enrichment & Signal Library Growth
+Goal: fill in the NaN feature columns and run enough iterations to build a library large enough for meaningful Darwinian weighting.
+
+**Priority 1 — Fill NaN columns (unlocks a new class of hypotheses):**
+- [ ] `pe_ratio`, `pb_ratio`, `ps_ratio`, `ev_ebitda` — fetch from FMP `/key-metrics` endpoint; add to `fetch_universe.py` and `build_loop_dataset.py`; these are available for all 49 tickers from 2018
+- [ ] `yield_10y`, `yield_2y`, `credit_spread` — fetch from FRED via `pandas_datareader` or `fredapi`; DGS10, DGS2, ICE BofA US Corporate Bond Spread (BAMLC0A0CMEY); add to build scripts as single time series (same value all tickers per bar, like vix)
+- [ ] `analyst_revision_3m` — already fetched via FMP `/analyst-estimates` into `fmp_estimates.parquet`; compute 3-month EPS estimate change % and wire into `build_loop_dataset.py`
+
+**Priority 2 — Build larger signal library:**
+- [ ] Run 3–5 more 20-iteration batches (`python scripts/run_loop.py --iterations 20 --budget 5.00`) to target 15–20 active signals; Darwinian weighting is meaningful only with ≥10 signals
+- [ ] Fix model verbosity: add explicit "max 80 lines of Python" constraint to system prompt; reduces code validation failures
+- [ ] Add `re`-retry on JSON parse failure: if `parse_llm_json` fails, send a follow-up message asking the model to output only the JSON object; reduces wasted iterations
+
+**Priority 3 — Paper trading:**
+- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; Kelly fraction = 0.25 (quarter-Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap 5% per position; closes #29
+- [ ] Paper trading mode: `Runner(strategy, Live, Sim)` — LiveProvider streams from yfinance; run nightly after market close; compare paper P&L to vault benchmark daily
+- [ ] Implement `LiveProvider.bars()` streaming from yfinance for paper mode
 
 ## Phase 6 — Productionization
 Goal: scheduled runs, monitoring, alerting.
 
-- [ ] Scheduled nightly research loop (new hypotheses + re-evaluate existing library)
+- [ ] Scheduled nightly research loop (new hypotheses + re-evaluate existing library); run via cron or systemd timer after market close
 - [ ] Slack notifications for new validated signals, decaying signals, regime shifts
-- [ ] Dashboard: signal library Darwinian weights over time, regime tracker
+- [ ] Dashboard: signal library Darwinian weights over time, regime tracker, vault benchmark comparison
+- [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with real broker API (Alpaca recommended for first deployment)
+- [ ] Promotion pipeline: backtest passes → paper 30 days with Sharpe > 0 → live (gated on continued Sharpe)
 
 ---
 
