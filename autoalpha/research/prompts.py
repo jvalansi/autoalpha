@@ -56,10 +56,10 @@ Do NOT write statements like "historically correlated", "backtested well", "data
 Write the supply-demand or behavioral-finance mechanism that links the factor to future price moves.
 
 ## Universe size — CRITICAL
-The backtest universe contains approximately 10 tickers.
-- NEVER use `len(df) < 20`, `< 30`, or similar large-universe guards — they will always exit early.
-- Minimum viable check: `if len(df) < 3: return {}` is enough.
-- Selecting a "top quintile" or "top 30%" from 10 tickers yields 2-3 stocks — that is fine and intended.
+The backtest universe contains approximately 49 tickers (diversified S&P 500 large-caps).
+- A top-quintile selection (~20% of 49) yields ~10 stocks — appropriate for diversification.
+- Minimum viable guard: `if len(df) < 5: return {}`.
+- Do NOT use guards like `len(df) < 20` on a 49-ticker universe — that's fine and expected.
 
 ## Constraints
 - predict() must return in < 1 second
