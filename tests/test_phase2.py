@@ -506,17 +506,25 @@ class TestCPCV:
             assert len(too_close) == 0
 
     def test_to_runner_folds_format(self):
-        """to_runner_folds must return list of ((date,date),(date,date)) tuples."""
+        """to_runner_folds must return (train_dates DatetimeIndex, (oos_start, oos_end))."""
         from autoalpha.backtest.cpcv import CPCV
+        import pandas as pd
         cpcv = CPCV(n_splits=6, n_test_splits=2, purge_days=5, embargo_days=2)
         dates = self._make_dates(600)
         folds = cpcv.to_runner_folds(dates)
         assert len(folds) > 0
-        for (in_start, in_end), (oos_start, oos_end) in folds:
-            assert isinstance(in_start, date)
+        for train_dates, (oos_start, oos_end) in folds:
+            assert isinstance(train_dates, pd.DatetimeIndex)
+            assert len(train_dates) > 0
             assert isinstance(oos_start, date)
-            assert in_end >= in_start
+            assert isinstance(oos_end, date)
             assert oos_end >= oos_start
+            # Purge check: no train date should fall within the OOS window
+            oos_ts_start = pd.Timestamp(oos_start)
+            oos_ts_end = pd.Timestamp(oos_end)
+            assert not any(
+                (oos_ts_start <= d <= oos_ts_end) for d in train_dates
+            ), "Purge failed: training dates overlap OOS window"
 
     def test_invalid_n_test_splits_raises(self):
         from autoalpha.backtest.cpcv import CPCV

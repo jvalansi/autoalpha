@@ -39,15 +39,22 @@ class Runner:
 
     def run_backtest(
         self,
-        folds: list[tuple[tuple[date, date], tuple[date, date]]],
+        folds: list[tuple[pd.DatetimeIndex, tuple[date, date]]],
     ) -> pd.Series:
-        """Run CPCV backtest. folds = [((in_start, in_end), (oos_start, oos_end)), ...]
+        """Run CPCV backtest. folds = [(train_dates, (oos_start, oos_end)), ...]
+
+        train_dates is a DatetimeIndex of the purged training observations produced by
+        CPCV.to_runner_folds().  The provider fetches the full [min, max] date range,
+        then the history is filtered to the exact purged set before calling fit().
+        This prevents look-ahead from purged boundary observations.
 
         Returns combined out-of-sample daily return series.
         """
         all_returns: list[pd.Series] = []
 
-        for (in_start, in_end), (oos_start, oos_end) in folds:
+        for train_dates, (oos_start, oos_end) in folds:
+            in_start = train_dates.min().date()
+            in_end = train_dates.max().date()
             logger.info("Fold: in-sample %s→%s | OOS %s→%s", in_start, in_end, oos_start, oos_end)
 
             # Reset executor so each fold starts with clean positions and NAV.
@@ -55,7 +62,12 @@ class Runner:
             # multiple folds — without reset, state bleeds across folds.
             self._executor.reset()
 
-            in_sample = self._provider.history(self._tickers, in_start, in_end)
+            full_history = self._provider.history(self._tickers, in_start, in_end)
+            if not full_history.empty:
+                date_level = full_history.index.get_level_values("date")
+                in_sample = full_history[date_level.isin(train_dates)]
+            else:
+                in_sample = full_history
             self._strategy.fit(in_sample)
 
             prev_targets: dict[str, float] = {}

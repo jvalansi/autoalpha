@@ -285,10 +285,9 @@ def test_runner_no_duplicate_returns_across_folds():
             executor = SimExecutor(initial_capital=100_000, cost_bps=0)
             runner = Runner(strategy, provider, executor, tickers)
 
-            mid = dates[20]
             folds = [
-                ((dates[0].date(), dates[9].date()), (dates[10].date(), dates[19].date())),
-                ((dates[10].date(), dates[19].date()), (dates[20].date(), dates[29].date())),
+                (dates[0:10], (dates[10].date(), dates[19].date())),
+                (dates[10:20], (dates[20].date(), dates[29].date())),
             ]
             returns = runner.run_backtest(folds)
             assert returns.index.is_unique, "run_backtest must not produce duplicate dates across folds"
@@ -392,8 +391,8 @@ def test_runner_fold_isolation():
 
     # Fold A and fold B share OOS dates[15:25]
     folds = [
-        ((dates[0].date(), dates[9].date()), (dates[15].date(), dates[24].date())),
-        ((dates[5].date(), dates[14].date()), (dates[15].date(), dates[24].date())),
+        (dates[0:10], (dates[15].date(), dates[24].date())),
+        (dates[5:15], (dates[15].date(), dates[24].date())),
     ]
 
     with patch.object(provider, "history", return_value=data):

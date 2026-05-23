@@ -255,8 +255,7 @@ class TestMomentumIntegration:
 
             split = len(dates) // 2
             folds = [
-                ((dates[0].date(), dates[split - 1].date()),
-                 (dates[split].date(), dates[-1].date())),
+                (dates[:split], (dates[split].date(), dates[-1].date())),
             ]
             returns = runner.run_backtest(folds)
 

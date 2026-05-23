@@ -101,21 +101,22 @@ class CPCV:
     def to_runner_folds(
         self,
         dates: pd.DatetimeIndex,
-    ) -> list[tuple[tuple[date, date], tuple[date, date]]]:
-        """Convert CPCV splits to Runner-compatible ((in_start, in_end), (oos_start, oos_end)).
+    ) -> list[tuple[pd.DatetimeIndex, tuple[date, date]]]:
+        """Convert CPCV splits to Runner-compatible (train_dates, (oos_start, oos_end)).
+
+        Returns the exact purged training DatetimeIndex rather than a (start, end) range so
+        the Runner can filter the in-sample data to exclude purged observations — preventing
+        the look-ahead that CPCV purging is designed to eliminate.
 
         Non-contiguous OOS periods (k > 1) are split into separate contiguous segments,
-        each paired with the same training window.
+        each paired with the same (purged) training set.
         """
-        folds: list[tuple[tuple[date, date], tuple[date, date]]] = []
+        folds: list[tuple[pd.DatetimeIndex, tuple[date, date]]] = []
 
         for train_dates, test_dates in self.split(dates):
-            in_start = train_dates.min().date()
-            in_end = train_dates.max().date()
-
             for seg_start, seg_end in _contiguous_segments(test_dates):
                 folds.append(
-                    ((in_start, in_end), (seg_start.date(), seg_end.date()))
+                    (train_dates, (seg_start.date(), seg_end.date()))
                 )
 
         return folds
