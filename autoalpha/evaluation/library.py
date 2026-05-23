@@ -33,7 +33,7 @@ _ROLLING_WINDOW = 63   # trading days
 _DECAY_DAYS = 63       # days at floor → decayed
 _DEATH_DAYS = 126      # days at floor → dead
 
-_DEFAULT_DB = Path("research/memory.db")
+_DEFAULT_DB = Path(__file__).resolve().parents[2] / "research" / "memory.db"
 
 
 def _init_tables(conn: sqlite3.Connection) -> None:

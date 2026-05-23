@@ -80,13 +80,20 @@ def deflated_sharpe(
     Threshold for statistical significance: DSR > 0.95.
 
     n_trials: cumulative count of all strategies ever evaluated (from research memory).
+
+    Benchmark SR formula (Bailey & López de Prado 2014, Eq. 8):
+      SR* = E[max_SR_n] × SE(annualized SR)
+      where SE ≈ sqrt(periods_per_year / (n - 1)) under the null hypothesis.
+    This scales the benchmark correctly for backtest length.
     """
     if n_trials < 1:
         n_trials = 1
 
-    # expected_max_sr returns an annualized-equivalent SR; pass directly as benchmark
+    n = len(returns)
     emax = expected_max_sr(n_trials)
-    return probabilistic_sharpe(returns, benchmark_sr=emax, periods_per_year=periods_per_year)
+    se_annual = math.sqrt(periods_per_year / max(n - 1, 1))
+    benchmark_sr = emax * se_annual
+    return probabilistic_sharpe(returns, benchmark_sr=benchmark_sr, periods_per_year=periods_per_year)
 
 
 def passes_sharpe_threshold(

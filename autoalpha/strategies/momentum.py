@@ -90,7 +90,9 @@ class MomentumStrategy(Strategy):
         # Rebalance on first trading day of each month (month change detected by bar_date)
         current_month = bar_date.month
         if current_month == self._prev_month:
-            return self._last_targets
+            # Filter out tickers no longer in the current universe to avoid stale positions.
+            active = set(bar_data.index)
+            return {t: w for t, w in self._last_targets.items() if t in active}
 
         self._prev_month = current_month
         self._last_targets = self._compute_targets()
