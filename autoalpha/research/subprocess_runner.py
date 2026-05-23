@@ -153,7 +153,8 @@ def _main():
     daily = returns.values
     sharpe = float(daily.mean() / daily.std() * (252 ** 0.5)) if daily.std() > 0 else 0.0
     dsr = float(deflated_sharpe(returns, n_trials=n_trials))
-    nav = (1 + returns).cumprod()
+    # Anchor NAV at 1.0 so losses on the very first bar are captured.
+    nav = pd.concat([pd.Series([1.0]), (1 + returns).cumprod()])
     roll_max = nav.cummax()
     dd = (nav - roll_max) / roll_max
     max_drawdown = float(abs(dd.min()))

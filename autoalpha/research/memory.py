@@ -194,9 +194,13 @@ class HypothesisMemory:
         return [dict(r) for r in rows]
 
     def get_pending_refinement(self, max_refinements: int = 3) -> Optional[dict]:
-        """Return most-recent rejected hypothesis eligible for refinement, or None."""
+        """Return most-recent rejected hypothesis eligible for refinement, or None.
+
+        Includes sharpe/dsr/max_drawdown so callers don't need to access _conn.
+        """
         row = self._conn.execute(
-            """SELECT id, refinement_count, hypothesis_json
+            """SELECT id, refinement_count, hypothesis_json,
+                      sharpe, dsr, max_drawdown
                FROM hypotheses
                WHERE status = 'rejected' AND refinement_count < ?
                ORDER BY trial_number DESC LIMIT 1""",

@@ -37,7 +37,7 @@ Arguments available inside predict():
     Open, High, Low, Close, Volume   (current bar OHLCV)
     ret_1d, ret_5d, ret_21d, ret_63d, ret_252d  (lookback returns, pre-computed)
     pe_ratio, pb_ratio, ps_ratio, ev_ebitda      (valuation multiples)
-    roa, roe, gross_margin, debt_equity          (fundamental ratios)
+    roe, net_margin                              (fundamental ratios — only these two are currently available)
     earnings_surprise, revenue_surprise          (most recent quarter vs estimate)
     analyst_revision_3m                          (3-month EPS estimate revision %)
     vix, yield_10y, yield_2y, credit_spread      (macro — same for all tickers)
@@ -102,11 +102,16 @@ def build_refinement_prompt(
     trial_number: int,
 ) -> tuple[str, str]:
     """Return (system, user) to refine a rejected hypothesis."""
-    user = f"""## Trial to refine (trial #{original_hyp.concise_reason})
+    user = f"""## Trial to refine (signal: {original_hyp.concise_reason})
 Original hypothesis: {original_hyp.hypothesis}
 Reason: {original_hyp.reason}
 Knowledge: {original_hyp.knowledge}
 Cohort: {original_hyp.cohort}
+
+## Original predict() implementation
+```python
+{original_hyp.predict_body}
+```
 
 ## Backtest result
 Sharpe: {backtest_result.get('sharpe', 'N/A')}

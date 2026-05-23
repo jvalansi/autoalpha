@@ -120,10 +120,26 @@ class TestHypothesisLifecycle:
     def test_get_pending_refinement_returns_rejected(self, mem):
         hyp = Hypothesis(**_HYP_KWARGS)
         hyp_id = mem.store_hypothesis(hyp, trial_number=1, cost_usd=0.0)
-        mem.update_status(hyp_id, "rejected")
+        mem.update_result(
+            hyp_id, status="rejected", sharpe=0.4, dsr=0.5, max_drawdown=0.12,
+            additional_cost_usd=0.0,
+        )
         pending = mem.get_pending_refinement(max_refinements=3)
         assert pending is not None
         assert pending["id"] == hyp_id
+
+    def test_get_pending_refinement_includes_metrics(self, mem):
+        hyp = Hypothesis(**_HYP_KWARGS)
+        hyp_id = mem.store_hypothesis(hyp, trial_number=1, cost_usd=0.0)
+        mem.update_result(
+            hyp_id, status="rejected", sharpe=0.35, dsr=0.62, max_drawdown=0.18,
+            additional_cost_usd=0.0,
+        )
+        pending = mem.get_pending_refinement(max_refinements=3)
+        assert pending is not None
+        assert abs(pending["sharpe"] - 0.35) < 1e-9
+        assert abs(pending["dsr"] - 0.62) < 1e-9
+        assert abs(pending["max_drawdown"] - 0.18) < 1e-9
 
     def test_get_pending_refinement_none_when_at_max(self, mem):
         hyp = Hypothesis(**_HYP_KWARGS)
@@ -138,6 +154,19 @@ class TestHypothesisLifecycle:
         assert mem.get_active_count() == 0
         hyp = Hypothesis(**_HYP_KWARGS)
         hyp_id = mem.store_hypothesis(hyp, trial_number=1, cost_usd=0.0)
+        mem.update_status(hyp_id, "active")
+        assert mem.get_active_count() == 1
+
+    def test_accepted_status_not_counted_as_active(self, mem):
+        # Verifies that 'accepted' (LLM output) != 'active' (DB status for live signals).
+        # loop._accept() must call update_status(id, 'active') explicitly.
+        hyp = Hypothesis(**_HYP_KWARGS)
+        hyp_id = mem.store_hypothesis(hyp, trial_number=1, cost_usd=0.0)
+        mem.update_result(
+            hyp_id, status="accepted", sharpe=1.5, dsr=0.97, max_drawdown=0.10,
+            additional_cost_usd=0.0,
+        )
+        assert mem.get_active_count() == 0  # 'accepted' ≠ 'active'
         mem.update_status(hyp_id, "active")
         assert mem.get_active_count() == 1
 

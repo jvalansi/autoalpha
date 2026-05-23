@@ -98,6 +98,10 @@ class TestBuildRefinementPrompt:
         _, user_p = build_refinement_prompt(_HYP, {"sharpe": 0.42, "dsr": 0.38, "max_drawdown": 0.18}, trial_number=2)
         assert "0.42" in user_p
 
+    def test_predict_body_included_in_refinement(self):
+        _, user_p = build_refinement_prompt(_HYP, {"sharpe": 0.3, "dsr": 0.4, "max_drawdown": 0.1}, trial_number=2)
+        assert _HYP.predict_body.strip() in user_p
+
 
 class TestBuildInterpretationPrompt:
     def test_returns_two_strings(self):

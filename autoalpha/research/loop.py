@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 from anthropic import Anthropic
 
 from autoalpha.evaluation.library import SignalLibrary
@@ -172,15 +172,10 @@ class ResearchLoop:
 
     def _refine(self, pending: dict, trial_number: int) -> tuple[Optional[Hypothesis], int, float]:
         original_hyp = Hypothesis.from_json(pending["hypothesis_json"])
-        # Fetch backtest result from memory row
-        row = self._memory._conn.execute(
-            "SELECT sharpe, dsr, max_drawdown FROM hypotheses WHERE id = ?",
-            (pending["id"],),
-        ).fetchone()
         backtest_result = {
-            "sharpe": row[0] if row else 0.0,
-            "dsr": row[1] if row else 0.0,
-            "max_drawdown": row[2] if row else 0.0,
+            "sharpe": pending.get("sharpe") or 0.0,
+            "dsr": pending.get("dsr") or 0.0,
+            "max_drawdown": pending.get("max_drawdown") or 0.0,
         }
         system, user = build_refinement_prompt(original_hyp, backtest_result, trial_number)
         raw, cost = self._call_llm(system, user)
@@ -221,41 +216,42 @@ class ResearchLoop:
         return hyp, hyp_id, cost
 
     def _accept(self, hyp: Hypothesis, hyp_id: int, result: BacktestResult) -> None:
-        import pandas as pd
-
-        n_active = self._memory.get_active_count()
-        # equal-weight among all accepted signals (including this one)
-        weight = 1.0 / (n_active + 1)
-
         if result.returns:
             alpha = pd.Series(result.returns)
             self._memory.store_portfolio_alpha(hyp_id, alpha)
 
+        # Mark active before add_signal so get_active_count() is accurate
+        self._memory.update_status(hyp_id, "active")
         self._library.add_signal(hyp.concise_reason)
+        n_active = self._memory.get_active_count()
         logger.info(
-            "ACCEPTED — %s  Sharpe=%.2f DSR=%.3f DD=%.1f%%  weight=%.3f",
+            "ACCEPTED — %s  Sharpe=%.2f DSR=%.3f DD=%.1f%%  active_signals=%d",
             hyp.concise_reason,
             result.sharpe,
             result.dsr,
             result.max_drawdown * 100,
-            weight,
+            n_active,
         )
 
     def _call_llm(self, system: str, user: str) -> tuple[str, float]:
-        """Call Claude and return (response_text, cost_usd)."""
+        """Call Claude with prompt caching and return (response_text, cost_usd)."""
         response = self._client.messages.create(
             model=self._model,
             max_tokens=2048,
-            system=system,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
         )
         text = response.content[0].text if response.content else ""
-        cost = _estimate_cost(response.usage.input_tokens, response.usage.output_tokens, self._model)
+        usage = response.usage
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        cost = _estimate_cost(
+            usage.input_tokens, usage.output_tokens, self._model,
+            cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+        )
         logger.debug(
-            "LLM call: %d in + %d out tokens = $%.4f",
-            response.usage.input_tokens,
-            response.usage.output_tokens,
-            cost,
+            "LLM call: %d in + %d out + %d cache_read + %d cache_write = $%.4f",
+            usage.input_tokens, usage.output_tokens, cache_read, cache_write, cost,
         )
         return text, cost
 
@@ -275,14 +271,25 @@ class ResearchLoop:
 # Cost estimation
 # ---------------------------------------------------------------------------
 
-_PRICING: dict[str, tuple[float, float]] = {
-    # (input $/1M tokens, output $/1M tokens)
-    "claude-opus-4-7":   (15.00, 75.00),
-    "claude-sonnet-4-6": (3.00,  15.00),
-    "claude-haiku-4-5":  (0.80,  4.00),
+_PRICING: dict[str, tuple[float, float, float, float]] = {
+    # (input, output, cache_write, cache_read) $/1M tokens
+    "claude-opus-4-7":   (15.00, 75.00, 18.75, 1.50),
+    "claude-sonnet-4-6": (3.00,  15.00,  3.75, 0.30),
+    "claude-haiku-4-5":  (0.80,   4.00,  1.00, 0.08),
 }
 
 
-def _estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
-    in_price, out_price = _PRICING.get(model, (15.00, 75.00))
-    return (input_tokens * in_price + output_tokens * out_price) / 1_000_000
+def _estimate_cost(
+    input_tokens: int,
+    output_tokens: int,
+    model: str,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float:
+    in_price, out_price, write_price, read_price = _PRICING.get(model, (15.00, 75.00, 18.75, 1.50))
+    return (
+        input_tokens * in_price
+        + output_tokens * out_price
+        + cache_write_tokens * write_price
+        + cache_read_tokens * read_price
+    ) / 1_000_000
