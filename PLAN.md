@@ -182,15 +182,27 @@ Goal: fill in the NaN feature columns and run enough iterations to build a libra
 - [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; Kelly fraction = 0.25 (quarter-Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap 5% per position; closes #29
 - [ ] Paper trading mode: `Runner(strategy, Live, Sim)` — LiveProvider streams from yfinance; run nightly after market close; compare paper P&L to vault benchmark daily
 - [ ] Implement `LiveProvider.bars()` streaming from yfinance for paper mode
+- [ ] Run paper for ≥ 30 calendar days before advancing; gate: paper Sharpe > 0 over the period
 
-## Phase 6 — Productionization
+## Phase 6 — Meta-Labeling & Live Deployment
+Goal: improve signal precision via a secondary filter, then graduate to live trading.
+
+Meta-labeling is placed here deliberately — after paper trading — because: (a) the meta-model needs real live signal firings as positive/negative examples beyond backtest data, and (b) with a library of 15–20 signals at quarterly cadence the training set is still thin; 30+ days of paper gives additional labeled events.
+
+- [ ] `autoalpha/labeling/meta_model.py` — per-strategy binary classifier ("given signal fired, will it work?"); trained on each CPCV fold's in-sample data only (no look-ahead); features: signal strength z-score, VIX regime, rolling 63d Sharpe, sector, market cap tier; model: LightGBM or logistic regression (not deep learning — too few samples); output: probability p ∈ [0,1]
+- [ ] Wire meta-confidence into sizer: final position = `0.25 × kelly_bet × darwinian_weight × meta_confidence`; if `meta_confidence < 0.5`, skip trade entirely
+- [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with Alpaca API; order type: market-on-open (MOO) to match backtest fill model
+- [ ] Promotion pipeline: backtest passes → paper ≥ 30 days (Sharpe > 0) → meta-model trained → live (gated on continued paper Sharpe)
+- [ ] Graceful degradation: if live broker API fails, fall back to `SimExecutor` and alert via Slack
+
+## Phase 7 — Productionization
 Goal: scheduled runs, monitoring, alerting.
 
 - [ ] Scheduled nightly research loop (new hypotheses + re-evaluate existing library); run via cron or systemd timer after market close
-- [ ] Slack notifications for new validated signals, decaying signals, regime shifts
-- [ ] Dashboard: signal library Darwinian weights over time, regime tracker, vault benchmark comparison
-- [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with real broker API (Alpaca recommended for first deployment)
-- [ ] Promotion pipeline: backtest passes → paper 30 days with Sharpe > 0 → live (gated on continued Sharpe)
+- [ ] Darwinian weight update job: runs daily after close, updates signal weights based on 63-day rolling alpha Sharpe; decays / kills underperforming signals
+- [ ] Slack notifications for: new validated signals, decaying signals, signal death, regime shifts, live trade executions, daily P&L vs benchmark
+- [ ] Dashboard: signal library Darwinian weights over time, regime tracker, paper/live P&L vs vault benchmark
+- [ ] Vault unlock (2026-05-21): final evaluation of all strategies against the 2-year holdout; update `vault_holdout.json` lock date and run `evaluate_vault.py`
 
 ---
 
