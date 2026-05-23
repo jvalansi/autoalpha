@@ -217,18 +217,19 @@ class TestQualityStrategy:
         bar = pd.DataFrame({"Close": [1.0] * 5, "Volume": [1e6] * 5},
                            index=pd.Index(tickers))
 
-        # Within the reporting lag window (< 45 days after Q1 end) → no targets yet
+        # Before reporting lag (< 45d after Q1 end 2018-03-31, so before 2018-05-15) → no targets
         t1 = strat.predict(bar, bar_date=pd.Timestamp("2018-04-02"))
         t2 = strat.predict(bar, bar_date=pd.Timestamp("2018-04-15"))
-        assert t1 == t2
+        assert t1 == {}
+        assert t2 == {}
 
-        # After reporting lag (~May 15) → Q1 targets applied
+        # First bar on or after reporting lag (~May 15) → Q1 targets applied immediately
         t3 = strat.predict(bar, bar_date=pd.Timestamp("2018-05-20"))
         assert isinstance(t3, dict)
 
-        # New quarter trigger doesn't re-run if same quarter key
-        t4 = strat.predict(bar, bar_date=pd.Timestamp("2018-07-02"))
-        assert isinstance(t4, dict)
+        # Subsequent bars in the same period use the same targets (no new q_date crossed)
+        t4 = strat.predict(bar, bar_date=pd.Timestamp("2018-06-01"))
+        assert t4 == t3
 
     def test_top_quintile_selected(self):
         from autoalpha.strategies.quality import QualityStrategy

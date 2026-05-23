@@ -49,8 +49,10 @@ class QualityStrategy(Strategy):
 
         # date → {ticker: weight} pre-computed for each quarter in-sample
         self._quarterly_targets: dict[pd.Timestamp, dict[str, float]] = {}
-        # pd.Timestamp of the most recently applied quarter boundary
-        self._current_quarter_key: Optional[tuple] = None
+        # Most recently applied q_date (after reporting lag); rebalance whenever a newer
+        # q_date crosses bar_date — avoids the mismatch between calendar-quarter triggers
+        # and the lagged availability date.
+        self._last_applied_q_date: Optional[pd.Timestamp] = None
         self._last_targets: dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -60,7 +62,7 @@ class QualityStrategy(Strategy):
     def fit(self, data: pd.DataFrame) -> None:
         """Compute quality targets for every quarter in the in-sample window."""
         self._quarterly_targets = {}
-        self._current_quarter_key = None
+        self._last_applied_q_date = None
         self._last_targets = {}
 
         if data.empty:
@@ -136,27 +138,28 @@ class QualityStrategy(Strategy):
         bar_data: pd.DataFrame,
         bar_date: Optional[pd.Timestamp] = None,
     ) -> dict[str, float]:
-        """Return new quality targets on the first trading day of each quarter."""
+        """Return updated quality targets whenever new quarterly data becomes available.
+
+        Rebalance trigger: the first bar after a new q_date (quarter-end + 45d lag)
+        crosses bar_date.  This ensures the reporting lag is honoured and the data
+        is applied as soon as it becomes available — not delayed to the next arbitrary
+        calendar-quarter boundary.
+        """
         if bar_date is None:
-            return self._last_targets
+            active = set(bar_data.index)
+            return {t: w for t, w in self._last_targets.items() if t in active}
 
-        current_key = (bar_date.year, (bar_date.month - 1) // 3)
-
-        if current_key == self._current_quarter_key:
-            return self._last_targets
-
-        # New quarter — find the most recent quarterly targets at or before bar_date
-        self._current_quarter_key = current_key
-        applicable = {
-            k: v for k, v in self._quarterly_targets.items()
-            if k <= bar_date
-        }
+        # Find most recent q_date at or before bar_date
+        applicable = {k: v for k, v in self._quarterly_targets.items() if k <= bar_date}
         if applicable:
             latest_key = max(applicable)
-            self._last_targets = applicable[latest_key]
-            logger.debug(
-                "Quality rebalance on %s using data from %s: %d positions",
-                bar_date.date(), latest_key.date(), len(self._last_targets),
-            )
+            if latest_key != self._last_applied_q_date:
+                self._last_targets = applicable[latest_key]
+                self._last_applied_q_date = latest_key
+                logger.debug(
+                    "Quality rebalance on %s using data from %s: %d positions",
+                    bar_date.date(), latest_key.date(), len(self._last_targets),
+                )
 
-        return self._last_targets
+        active = set(bar_data.index)
+        return {t: w for t, w in self._last_targets.items() if t in active}
