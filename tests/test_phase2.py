@@ -186,7 +186,7 @@ class TestMarginal:
     def test_combine_none_existing_returns_new(self):
         from autoalpha.evaluation.marginal import combine_portfolio_alpha
         new_strat = _make_return_series(100)
-        combined = combine_portfolio_alpha(None, new_strat)
+        combined = combine_portfolio_alpha(None, new_strat, weight=1.0)
         pd.testing.assert_series_equal(combined, new_strat)
 
 

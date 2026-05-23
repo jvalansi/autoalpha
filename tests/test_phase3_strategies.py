@@ -267,12 +267,12 @@ class TestQualityStrategy:
 # ---------------------------------------------------------------------------
 
 class TestEarningsRevisionsStrategy:
-    def _make_estimates(self, ticker: str, estimates: list[float]) -> pd.DataFrame:
-        dates = pd.date_range("2018-01-01", periods=len(estimates), freq="QE")
-        return pd.DataFrame({
-            "date": dates,
-            "estimatedEpsAvg": estimates,
-        })
+    def _make_yoy_estimates(self, q3_eps: tuple[float, float]) -> pd.DataFrame:
+        """Two years of quarterly estimates with controllable Q3 values for YoY comparison."""
+        # 8 quarters: Q1-Q4 2017, Q1-Q4 2018
+        dates = pd.date_range("2017-01-01", periods=8, freq="QE")
+        eps = [1.0, 1.0, q3_eps[0], 1.0, 1.0, 1.0, q3_eps[1], 1.0]
+        return pd.DataFrame({"date": dates, "estimatedEpsAvg": eps})
 
     def test_no_signal_without_api_key(self):
         from autoalpha.strategies.earnings_revisions import EarningsRevisionsStrategy
@@ -284,14 +284,15 @@ class TestEarningsRevisionsStrategy:
     def test_revision_detection(self):
         from autoalpha.strategies.earnings_revisions import EarningsRevisionsStrategy
         strat = EarningsRevisionsStrategy(fmp_api_key="TEST", revision_threshold=0.05)
-        estimates = self._make_estimates("AAPL", [1.0, 1.0, 1.10])  # 10% revision in Q3
+        # Q3 2017: 1.0, Q3 2018: 1.10 → 10% YoY growth, exceeds threshold
+        estimates = self._make_yoy_estimates((1.0, 1.10))
 
         with patch("autoalpha.strategies.earnings_revisions.get_estimates",
                    return_value=estimates):
             strat.fit(_mi_ohlcv(["AAPL"]))
 
-        # The Q3 revision date should trigger a signal
-        rev_date = estimates["date"].iloc[-1]
+        # Q3 2018 date should trigger a signal
+        rev_date = estimates["date"].iloc[6]  # 7th row = Q3 2018
         bar = pd.DataFrame({"Close": [150.0]}, index=pd.Index(["AAPL"]))
         result = strat.predict(bar, bar_date=rev_date)
         assert "AAPL" in result
@@ -300,13 +301,14 @@ class TestEarningsRevisionsStrategy:
     def test_no_revision_when_below_threshold(self):
         from autoalpha.strategies.earnings_revisions import EarningsRevisionsStrategy
         strat = EarningsRevisionsStrategy(fmp_api_key="TEST", revision_threshold=0.05)
-        estimates = self._make_estimates("AAPL", [1.0, 1.0, 1.02])  # only 2% revision
+        # Q3 2017: 1.0, Q3 2018: 1.02 → only 2% YoY, below threshold
+        estimates = self._make_yoy_estimates((1.0, 1.02))
 
         with patch("autoalpha.strategies.earnings_revisions.get_estimates",
                    return_value=estimates):
             strat.fit(_mi_ohlcv(["AAPL"]))
 
-        rev_date = estimates["date"].iloc[-1]
+        rev_date = estimates["date"].iloc[6]
         bar = pd.DataFrame({"Close": [150.0]}, index=pd.Index(["AAPL"]))
         result = strat.predict(bar, bar_date=rev_date)
         assert "AAPL" not in result
@@ -315,13 +317,13 @@ class TestEarningsRevisionsStrategy:
         from autoalpha.strategies.earnings_revisions import EarningsRevisionsStrategy
         strat = EarningsRevisionsStrategy(fmp_api_key="TEST", revision_threshold=0.05,
                                           hold_bars=2)
-        estimates = self._make_estimates("AAPL", [1.0, 1.10])
+        estimates = self._make_yoy_estimates((1.0, 1.10))
 
         with patch("autoalpha.strategies.earnings_revisions.get_estimates",
                    return_value=estimates):
             strat.fit(_mi_ohlcv(["AAPL"]))
 
-        rev_date = estimates["date"].iloc[-1]
+        rev_date = estimates["date"].iloc[6]  # Q3 2018
         bar = pd.DataFrame({"Close": [150.0]}, index=pd.Index(["AAPL"]))
 
         strat.predict(bar, bar_date=rev_date)  # entry

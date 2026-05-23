@@ -62,7 +62,7 @@ def marginal_sharpe(
 def combine_portfolio_alpha(
     existing_portfolio_alpha: Optional[pd.Series],
     new_strategy_alpha: pd.Series,
-    weight: float = 0.5,
+    weight: float,
 ) -> pd.Series:
     """Blend a new strategy's alpha into the existing portfolio alpha series.
 
@@ -71,6 +71,7 @@ def combine_portfolio_alpha(
 
     existing_portfolio_alpha: None if this is the first strategy.
     weight: allocation weight for the new strategy (0 to 1).
+            Pass 1/n_active_signals for equal-weight allocation.
     """
     if existing_portfolio_alpha is None or existing_portfolio_alpha.empty:
         return new_strategy_alpha.copy()

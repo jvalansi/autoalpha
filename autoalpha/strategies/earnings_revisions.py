@@ -1,8 +1,12 @@
-"""Earnings revisions strategy.
+"""Earnings acceleration strategy (EPS consensus YoY comparison).
 
-Signal: quarter-over-quarter change in analyst consensus EPS estimate.
-If the current quarter's estimate exceeds the prior quarter's estimate
-by more than REVISION_THRESHOLD, enter a 2% long position.
+Signal: year-over-year change in analyst consensus EPS estimate for the same
+fiscal quarter (e.g., Q2 2024 estimate vs Q2 2023 estimate). A meaningful
+upward shift signals accelerating earnings expectations for that quarter.
+
+Using same-quarter YoY rather than sequential quarterly shift(1) avoids
+comparing different fiscal periods (Q1 vs Q2) and avoids seasonal distortions
+(e.g., retail Q4 is always higher than Q1 regardless of revision activity).
 
 Entry: next bar's open (next-bar fill model).
 Hold:  HOLD_BARS trading days.
@@ -122,12 +126,16 @@ class EarningsRevisionsStrategy(Strategy):
             return set()
 
         df = df.sort_values("date").reset_index(drop=True)
-        df["eps_prev"] = df["estimatedEpsAvg"].shift(1)
+
+        # Compare same fiscal quarter year-over-year (Q2 2024 vs Q2 2023) to
+        # avoid mixing different seasonal periods with a simple shift(1).
+        df["fiscal_quarter"] = df["date"].dt.quarter
+        df["eps_prev_yoy"] = df.groupby("fiscal_quarter")["estimatedEpsAvg"].shift(1)
 
         revision_dates: set = set()
         for _, row in df.iterrows():
             curr = row.get("estimatedEpsAvg")
-            prev = row.get("eps_prev")
+            prev = row.get("eps_prev_yoy")
             if pd.isna(curr) or pd.isna(prev) or prev == 0:
                 continue
             change = (float(curr) - float(prev)) / abs(float(prev))

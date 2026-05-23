@@ -180,8 +180,9 @@ class ResearchLoop:
         system, user = build_refinement_prompt(original_hyp, backtest_result, trial_number)
         raw, cost = self._call_llm(system, user)
         result = self._parse_and_store(raw, trial_number, cost)
-        if result[0] is not None:
-            self._memory.increment_refinement_count(pending["id"])
+        # Always increment even on parse failure — a failed refinement attempt still counts
+        # toward the max_refinements cap so the loop can't retry the same hypothesis forever.
+        self._memory.increment_refinement_count(pending["id"])
         return result
 
     def _interpret(self, hyp: Hypothesis, result: BacktestResult) -> tuple[dict, float]:
