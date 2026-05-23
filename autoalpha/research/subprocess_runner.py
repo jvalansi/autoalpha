@@ -29,6 +29,7 @@ class BacktestResult:
     dsr: float = 0.0
     max_drawdown: float = 0.0
     returns: list[float] = field(default_factory=list)
+    return_dates: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
     @property
@@ -164,6 +165,7 @@ def _main():
         "dsr": dsr,
         "max_drawdown": max_drawdown,
         "returns": daily.tolist(),
+        "return_dates": returns.index.strftime("%Y-%m-%d").tolist(),
         "error": None,
     }))
 
@@ -231,4 +233,5 @@ def _run_child(
         dsr=data.get("dsr", 0.0),
         max_drawdown=data.get("max_drawdown", 0.0),
         returns=data.get("returns", []),
+        return_dates=data.get("return_dates", []),
     )

@@ -217,8 +217,9 @@ class ResearchLoop:
         return hyp, hyp_id, cost
 
     def _accept(self, hyp: Hypothesis, hyp_id: int, result: BacktestResult) -> None:
-        if result.returns:
-            alpha = pd.Series(result.returns)
+        if result.returns and result.return_dates:
+            idx = pd.to_datetime(result.return_dates)
+            alpha = pd.Series(result.returns, index=idx)
             self._memory.store_portfolio_alpha(hyp_id, alpha)
 
         # Mark active before add_signal so get_active_count() is accurate
