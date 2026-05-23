@@ -50,6 +50,11 @@ class Runner:
         for (in_start, in_end), (oos_start, oos_end) in folds:
             logger.info("Fold: in-sample %s→%s | OOS %s→%s", in_start, in_end, oos_start, oos_end)
 
+            # Reset executor so each fold starts with clean positions and NAV.
+            # This is critical for CPCV k>1 where the same date appears as OOS in
+            # multiple folds — without reset, state bleeds across folds.
+            self._executor.reset()
+
             in_sample = self._provider.history(self._tickers, in_start, in_end)
             self._strategy.fit(in_sample)
 
@@ -61,13 +66,7 @@ class Runner:
                     self._executor.execute(prev_targets, bar_date, open_prices)
                 prev_targets = self._strategy.predict(bar_df, bar_date=bar_date)
 
-            # Slice to this fold's OOS period — executor accumulates across folds
-            all_fold_returns = self._executor.returns()
-            oos_mask = (
-                (all_fold_returns.index >= pd.Timestamp(oos_start))
-                & (all_fold_returns.index <= pd.Timestamp(oos_end))
-            )
-            fold_returns = all_fold_returns[oos_mask]
+            fold_returns = self._executor.returns()
             if not fold_returns.empty:
                 all_returns.append(fold_returns)
 

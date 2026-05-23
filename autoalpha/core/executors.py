@@ -33,6 +33,10 @@ class Executor(ABC):
     def returns(self) -> pd.Series:
         """Return daily return series (indexed by date)."""
 
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset all positions, cash, and history to the initial state."""
+
 
 class SimExecutor(Executor):
     """Simulated executor.
@@ -53,6 +57,12 @@ class SimExecutor(Executor):
         self._positions: dict[str, float] = {}  # ticker -> shares
         self._cash = initial_capital
         self._nav_history: dict[date, float] = {}
+
+    def reset(self) -> None:
+        """Reset to initial state — call between CPCV folds."""
+        self._positions = {}
+        self._cash = self._capital
+        self._nav_history = {}
 
     def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float]) -> None:
         nav = self._compute_nav(prices)
@@ -127,6 +137,9 @@ class LiveExecutor(Executor):
         if not self._returns:
             return pd.Series(dtype=float)
         return pd.Series({d: r for d, r in self._returns}).sort_index()
+
+    def reset(self) -> None:
+        self._returns = []
 
     def _submit_order(self, ticker: str, target_frac: float, price: float, bar_date: date) -> None:
         raise NotImplementedError("Implement broker API call here")
