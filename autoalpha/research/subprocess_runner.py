@@ -151,11 +151,15 @@ def _main():
         return
 
     import numpy as np
-    daily = returns.values
+    from autoalpha.evaluation.alpha import compute_alpha_returns
+    # Use FF5 alpha returns for Sharpe/DSR; fall back to raw returns if unavailable.
+    alpha_series, _ = compute_alpha_returns(returns)
+
+    daily = alpha_series.values
     sharpe = float(daily.mean() / daily.std() * (252 ** 0.5)) if daily.std() > 0 else 0.0
-    dsr = float(deflated_sharpe(returns, n_trials=n_trials))
+    dsr = float(deflated_sharpe(alpha_series, n_trials=n_trials))
     # Anchor NAV at 1.0 so losses on the very first bar are captured.
-    nav = pd.concat([pd.Series([1.0]), (1 + returns).cumprod()])
+    nav = pd.concat([pd.Series([1.0]), (1 + alpha_series).cumprod()])
     roll_max = nav.cummax()
     dd = (nav - roll_max) / roll_max
     max_drawdown = float(abs(dd.min()))
@@ -165,7 +169,7 @@ def _main():
         "dsr": dsr,
         "max_drawdown": max_drawdown,
         "returns": daily.tolist(),
-        "return_dates": returns.index.strftime("%Y-%m-%d").tolist(),
+        "return_dates": alpha_series.index.strftime("%Y-%m-%d").tolist(),
         "error": None,
     }))
 
