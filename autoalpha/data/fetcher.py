@@ -1,8 +1,14 @@
-"""Unified data fetcher with vault holdout enforcement.
+"""Unified data fetcher with vault holdout enforcement and FMP caching.
 
-Wraps yfinance (prices) and FMP (earnings/fundamentals).
+Wraps yfinance (prices) and FMP (earnings/fundamentals/transcripts).
 Raises VaultLeakError if any requested date range overlaps the holdout window.
-Caches all fetched data as Parquet at data/cache/{ticker}/{year}.parquet.
+
+Cache layout (data/cache/{ticker}/):
+  {year}.parquet              — OHLCV (one file per calendar year)
+  fmp_earnings.parquet        — full earnings history (date-filtered at read time)
+  fmp_estimates.parquet       — full analyst estimates history
+  fmp_fundamentals.parquet    — full income+balance fundamentals history
+  fmp_transcript_{year}q{q}.txt  — individual quarter transcripts
 """
 from __future__ import annotations
 
@@ -43,6 +49,16 @@ def _check_vault(start: date, end: date) -> None:
         )
 
 
+def _ticker_cache_dir(ticker: str, cache_dir: Path = _CACHE_ROOT) -> Path:
+    d = cache_dir / ticker.upper()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ---------------------------------------------------------------------------
+# OHLCV
+# ---------------------------------------------------------------------------
+
 def get_ohlcv(
     ticker: str,
     start: date,
@@ -55,8 +71,7 @@ def get_ohlcv(
     """
     _check_vault(start, end)
 
-    ticker_dir = cache_dir / ticker
-    ticker_dir.mkdir(parents=True, exist_ok=True)
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
     frames = []
     for year in range(start.year, end.year + 1):
         cache_path = ticker_dir / f"{year}.parquet"
@@ -88,100 +103,110 @@ def get_ohlcv(
     return df[mask]
 
 
+# ---------------------------------------------------------------------------
+# FMP helpers
+# ---------------------------------------------------------------------------
+
+def _fmp_get(url: str, params: dict) -> list:
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json() or []
+
+
+def _load_parquet_cache(path: Path) -> pd.DataFrame | None:
+    if path.exists():
+        try:
+            return pd.read_parquet(path)
+        except Exception:
+            path.unlink(missing_ok=True)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Earnings
+# ---------------------------------------------------------------------------
+
 def get_earnings(
     ticker: str,
     start: date,
     end: date,
     api_key: Optional[str] = None,
+    cache_dir: Path = _CACHE_ROOT,
 ) -> pd.DataFrame:
-    """Return earnings surprise data from FMP for the given ticker and date range.
-
-    Columns: date, eps_actual, eps_estimate, rev_actual, rev_estimate.
-    """
+    """Return earnings surprise data from FMP for the given ticker and date range."""
     _check_vault(start, end)
     key = api_key or os.environ.get("FMP_API_KEY", "")
     if not key:
         raise EnvironmentError("FMP_API_KEY not set")
 
-    url = f"{FMP_BASE}/earnings"
-    params = {"symbol": ticker.upper(), "apikey": key, "limit": 40}
-    resp = requests.get(url, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data:
-        return pd.DataFrame()
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
+    cache_path = ticker_dir / "fmp_earnings.parquet"
 
-    df = pd.DataFrame(data)
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df = _load_parquet_cache(cache_path)
+    if df is None:
+        data = _fmp_get(f"{FMP_BASE}/earnings", {"symbol": ticker.upper(), "apikey": key, "limit": 40})
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        df.to_parquet(cache_path, index=False)
+        logger.debug("Cached earnings for %s (%d rows)", ticker, len(df))
+
     df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
     return df.reset_index(drop=True)
 
 
-def get_transcripts(
-    ticker: str,
-    year: int,
-    quarter: int,
-    api_key: Optional[str] = None,
-) -> str:
-    """Return earnings call transcript text from FMP."""
-    # Approximate the transcript date as the last day of the quarter for vault check.
-    _quarter_end = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
-    month, day = _quarter_end[quarter]
-    approx_date = date(year, month, day)
-    _check_vault(approx_date, approx_date)
-
-    key = api_key or os.environ.get("FMP_API_KEY", "")
-    if not key:
-        raise EnvironmentError("FMP_API_KEY not set")
-
-    url = f"{FMP_BASE}/earning_call_transcript"
-    params = {"symbol": ticker.upper(), "year": year, "quarter": quarter, "apikey": key}
-    resp = requests.get(url, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data:
-        return ""
-    return data[0].get("content", "")
-
+# ---------------------------------------------------------------------------
+# Analyst estimates
+# ---------------------------------------------------------------------------
 
 def get_estimates(
     ticker: str,
     start: date,
     end: date,
     api_key: Optional[str] = None,
+    cache_dir: Path = _CACHE_ROOT,
 ) -> pd.DataFrame:
-    """Return quarterly analyst consensus EPS and revenue estimates from FMP.
-
-    Columns: date, estimatedEpsAvg, estimatedRevenueAvg.
-    """
+    """Return quarterly analyst consensus EPS and revenue estimates from FMP."""
     _check_vault(start, end)
     key = api_key or os.environ.get("FMP_API_KEY", "")
     if not key:
         raise EnvironmentError("FMP_API_KEY not set")
 
-    url = f"{FMP_BASE}/analyst-estimates"
-    params = {"symbol": ticker.upper(), "period": "quarterly", "limit": 20, "apikey": key}
-    resp = requests.get(url, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data:
-        return pd.DataFrame()
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
+    cache_path = ticker_dir / "fmp_estimates.parquet"
 
-    df = pd.DataFrame(data)
-    if "date" not in df.columns:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-    keep_cols = [c for c in ["date", "estimatedEpsAvg", "estimatedRevenueAvg"] if c in df.columns]
-    df = df[keep_cols]
+    df = _load_parquet_cache(cache_path)
+    if df is None:
+        data = _fmp_get(
+            f"{FMP_BASE}/analyst-estimates",
+            {"symbol": ticker.upper(), "period": "quarterly", "limit": 40, "apikey": key},
+        )
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        if "date" not in df.columns:
+            return pd.DataFrame()
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        keep_cols = [c for c in ["date", "estimatedEpsAvg", "estimatedRevenueAvg"] if c in df.columns]
+        df = df[keep_cols]
+        df.to_parquet(cache_path, index=False)
+        logger.debug("Cached estimates for %s (%d rows)", ticker, len(df))
+
     df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
     return df.reset_index(drop=True)
 
+
+# ---------------------------------------------------------------------------
+# Fundamentals
+# ---------------------------------------------------------------------------
 
 def get_fundamentals(
     ticker: str,
     start: date,
     end: date,
     api_key: Optional[str] = None,
+    cache_dir: Path = _CACHE_ROOT,
 ) -> pd.DataFrame:
     """Return quarterly fundamental data (ROE, leverage, net_margin) from FMP."""
     _check_vault(start, end)
@@ -189,28 +214,63 @@ def get_fundamentals(
     if not key:
         raise EnvironmentError("FMP_API_KEY not set")
 
-    url = f"{FMP_BASE}/income-statement"
-    params = {"symbol": ticker.upper(), "period": "quarter", "limit": 20, "apikey": key}
-    resp = requests.get(url, params=params, timeout=15)
-    resp.raise_for_status()
-    income = resp.json()
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
+    cache_path = ticker_dir / "fmp_fundamentals.parquet"
 
-    url2 = f"{FMP_BASE}/balance-sheet-statement"
-    resp2 = requests.get(url2, params={**params, "limit": 20}, timeout=15)
-    resp2.raise_for_status()
-    balance = resp2.json()
+    df = _load_parquet_cache(cache_path)
+    if df is None:
+        params = {"symbol": ticker.upper(), "period": "quarter", "limit": 40, "apikey": key}
+        income = _fmp_get(f"{FMP_BASE}/income-statement", params)
+        balance = _fmp_get(f"{FMP_BASE}/balance-sheet-statement", params)
+        if not income or not balance:
+            return pd.DataFrame()
 
-    if not income or not balance:
-        return pd.DataFrame()
+        inc_df = pd.DataFrame(income)[["date", "netIncome", "revenue", "eps"]]
+        bal_df = pd.DataFrame(balance)[["date", "totalStockholdersEquity", "netDebt"]]
+        df = inc_df.merge(bal_df, on="date", how="inner")
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        df.to_parquet(cache_path, index=False)
+        logger.debug("Cached fundamentals for %s (%d rows)", ticker, len(df))
 
-    inc_df = pd.DataFrame(income)[["date", "netIncome", "revenue", "eps"]]
-    bal_df = pd.DataFrame(balance)[["date", "totalStockholdersEquity", "netDebt"]]
-    df = inc_df.merge(bal_df, on="date", how="inner")
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))].copy()
-    # Derived ratios used by the quality strategy (quality.py)
     equity = df["totalStockholdersEquity"].replace(0, float("nan"))
     df["roe"] = df["netIncome"] / equity
     revenue = df["revenue"].replace(0, float("nan"))
     df["net_margin"] = df["netIncome"] / revenue
     return df.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Transcripts
+# ---------------------------------------------------------------------------
+
+def get_transcripts(
+    ticker: str,
+    year: int,
+    quarter: int,
+    api_key: Optional[str] = None,
+    cache_dir: Path = _CACHE_ROOT,
+) -> str:
+    """Return earnings call transcript text from FMP."""
+    _quarter_end = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    month, day = _quarter_end[quarter]
+    _check_vault(date(year, month, day), date(year, month, day))
+
+    key = api_key or os.environ.get("FMP_API_KEY", "")
+    if not key:
+        raise EnvironmentError("FMP_API_KEY not set")
+
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
+    cache_path = ticker_dir / f"fmp_transcript_{year}q{quarter}.txt"
+
+    if cache_path.exists():
+        return cache_path.read_text(encoding="utf-8")
+
+    data = _fmp_get(
+        f"{FMP_BASE}/earning_call_transcript",
+        {"symbol": ticker.upper(), "year": year, "quarter": quarter, "apikey": key},
+    )
+    text = data[0].get("content", "") if data else ""
+    cache_path.write_text(text, encoding="utf-8")
+    logger.debug("Cached transcript for %s %dQ%d (%d chars)", ticker, year, quarter, len(text))
+    return text

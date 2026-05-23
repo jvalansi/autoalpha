@@ -84,11 +84,9 @@ def deflated_sharpe(
     if n_trials < 1:
         n_trials = 1
 
-    # Expected max SR over T trials (per-period), annualize for PSR call
+    # expected_max_sr returns an annualized-equivalent SR; pass directly as benchmark
     emax = expected_max_sr(n_trials)
-    emax_annualized = emax * math.sqrt(periods_per_year)
-
-    return probabilistic_sharpe(returns, benchmark_sr=emax_annualized, periods_per_year=periods_per_year)
+    return probabilistic_sharpe(returns, benchmark_sr=emax, periods_per_year=periods_per_year)
 
 
 def passes_sharpe_threshold(
