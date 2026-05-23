@@ -48,6 +48,9 @@ class TestKnowledgeValidation:
         "tends to",
         "machine learning found",
         "empirically observed",
+        "showed a pattern",
+        "pattern in the data",
+        "historical pattern",
     ])
     def test_curve_fitting_phrases_rejected(self, phrase):
         # Sentence is deliberately ≥20 words so the length check passes and
@@ -64,6 +67,16 @@ class TestKnowledgeValidation:
         bad = _VALID_KNOWLEDGE + " It Has Worked historically."
         with pytest.raises(HypothesisValidationError):
             _validate_knowledge(bad)
+
+    def test_standalone_pattern_word_allowed(self):
+        # 'pattern' alone was previously blacklisted, incorrectly blocking
+        # legitimate causal references like 'behavioral pattern' or 'demand pattern'.
+        valid = (
+            "Investors exhibit a behavioral pattern of herding — buying into recent "
+            "winners and selling recent losers — which creates persistent momentum "
+            "as late adopters pile in after initial price moves have already begun."
+        )
+        _validate_knowledge(valid)  # should not raise
 
 
 class TestHypothesisDataclass:

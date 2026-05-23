@@ -14,7 +14,9 @@ _MIN_KNOWLEDGE_WORDS: int = 20
 _CURVE_FITTING_PHRASES: frozenset[str] = frozenset({
     "backtested well",
     "historically correlated",
-    "pattern",
+    "showed a pattern",
+    "pattern in the data",
+    "historical pattern",
     "machine learning found",
     "data showed",
     "empirically observed",
