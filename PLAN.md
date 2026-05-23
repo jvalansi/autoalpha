@@ -179,7 +179,7 @@ Goal: fill in the NaN feature columns and run enough iterations to build a libra
 - [ ] Add `re`-retry on JSON parse failure: if `parse_llm_json` fails, send a follow-up message asking the model to output only the JSON object; reduces wasted iterations
 
 **Priority 3 — Paper trading:**
-- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; Kelly fraction = 0.25 (quarter-Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap 5% per position; closes #29
+- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; **Kelly fraction = 0.25** (quarter-Kelly; reduces median drawdown ~75% vs full Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap: no single position > 5% of portfolio; meta_confidence multiplied in Phase 6 after meta-model is trained; closes #29
 - [ ] Paper trading mode: `Runner(strategy, Live, Sim)` — LiveProvider streams from yfinance; run nightly after market close; compare paper P&L to vault benchmark daily
 - [ ] Implement `LiveProvider.bars()` streaming from yfinance for paper mode
 - [ ] Run paper for ≥ 30 calendar days before advancing; gate: paper Sharpe > 0 over the period
