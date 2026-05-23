@@ -110,10 +110,21 @@ class EarningsNLPStrategy(Strategy):
         dates = data.index.get_level_values("date")
         start_year = dates.min().year
         end_date = dates.max()
-        end_year = end_date.year
-        # Fetch only complete quarters to avoid vault overlap from future quarter-end dates.
-        # (month-1)//3 gives: Jan-Mar→0, Apr-Jun→1, Jul-Sep→2, Oct-Dec→3
-        last_complete_quarter = (end_date.month - 1) // 3
+
+        # Transcripts are released ~45 days after quarter end. Compute the last
+        # (year, quarter) whose transcript is available as of end_date.
+        # Example: fold ends 2024-02-15 → 45-day cutoff = 2024-01-01 → Q4 2023 available.
+        # Without this lag, a fold ending in January would set last_complete_quarter=0
+        # and skip all of 2024, missing Q4 2023 transcripts for the end_year.
+        cutoff = end_date - pd.Timedelta(days=45)
+        _quarter_ends = [(3, 31), (6, 30), (9, 30), (12, 31)]
+        avail_year, avail_q = cutoff.year, 0
+        for qnum, (month, day) in enumerate(_quarter_ends, 1):
+            if pd.Timestamp(cutoff.year, month, day) <= cutoff:
+                avail_q = qnum
+        if avail_q == 0:
+            avail_year -= 1
+            avail_q = 4
 
         if not self._api_key:
             logger.warning("FMP_API_KEY not set — EarningsNLP will produce no signals")
@@ -121,8 +132,8 @@ class EarningsNLPStrategy(Strategy):
 
         for ticker in tickers:
             ticker_scores: dict[tuple, float] = {}
-            for year in range(start_year, end_year + 1):
-                max_q = last_complete_quarter if year == end_year else 4
+            for year in range(start_year, avail_year + 1):
+                max_q = avail_q if year == avail_year else 4
                 for quarter in range(1, max_q + 1):
                     try:
                         text = get_transcripts(

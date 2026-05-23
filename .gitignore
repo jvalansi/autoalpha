@@ -11,3 +11,4 @@ data/**/*.zip
 *.jsonl
 *.db
 vault/
+autoalpha.egg-info/

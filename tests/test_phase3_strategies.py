@@ -418,3 +418,29 @@ class TestEarningsNLPStrategy:
         strat.predict(bar, bar_date=dates[1])   # hold (bars_held=1)
         res = strat.predict(bar, bar_date=dates[2])  # exit (bars_held=2 >= 2)
         assert res.get("AAPL") == 0.0
+
+    def test_q1_fold_fetches_q4_prior_year(self):
+        """Fold ending in Q1 must pre-fetch Q4 of the previous year (45-day release lag)."""
+        from autoalpha.strategies.earnings_nlp import EarningsNLPStrategy
+        fetch_calls: list[tuple] = []
+
+        def fake_transcripts(ticker, year, quarter, api_key=""):
+            fetch_calls.append((ticker, year, quarter))
+            return "positive beat exceeded strong growth " * 30
+
+        strat = EarningsNLPStrategy(fmp_api_key="TEST")
+        # Build in-sample data ending 2024-02-15 (Q1 2024 — last_complete_quarter was 0)
+        dates = pd.date_range("2023-01-01", "2024-02-15", freq="B")
+        mi = pd.DataFrame(
+            {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1e6},
+            index=pd.MultiIndex.from_product([dates, ["AAPL"]], names=["date", "ticker"]),
+        )
+        with patch("autoalpha.strategies.earnings_nlp.get_transcripts",
+                   side_effect=fake_transcripts):
+            strat.fit(mi)
+
+        # Q4 2023 must have been fetched (transcript available ~45 days after Dec 31 = Feb 14)
+        assert ("AAPL", 2023, 4) in fetch_calls, (
+            "Q4 2023 transcript not fetched even though fold ends 2024-02-15 "
+            "(45-day lag from Dec 31 = Feb 14 ≤ fold end)"
+        )
