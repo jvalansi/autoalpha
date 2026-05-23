@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DSR_THRESHOLD = 0.95
-_MAX_DRAWDOWN_THRESHOLD = 0.25  # 25%
+_MAX_DRAWDOWN_THRESHOLD = 0.60  # 60% — concentrated 10-stock long-only universe
 
 # ---------------------------------------------------------------------------
 # Loop
@@ -211,6 +211,7 @@ class ResearchLoop:
             hyp = Hypothesis.from_dict(data)
         except (ValueError, KeyError, HypothesisValidationError) as exc:
             logger.warning("Failed to construct Hypothesis from LLM output: %s", exc)
+            logger.warning("Raw LLM text was: %r", raw[:500])
             return None, -1, cost
 
         hyp_id = self._memory.store_hypothesis(hyp, trial_number, cost_usd=cost)
@@ -244,6 +245,9 @@ class ResearchLoop:
             messages=[{"role": "user", "content": user}],
         )
         text = response.content[0].text if response.content else ""
+        logger.debug("LLM raw response (first 500 chars): %s", text[:500])
+        if not text:
+            logger.warning("LLM returned empty response. stop_reason=%s content=%r", response.stop_reason, response.content)
         usage = response.usage
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0

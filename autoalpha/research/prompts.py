@@ -34,14 +34,15 @@ The method signature is:
 
 Arguments available inside predict():
 - `bar_data` — DataFrame indexed by ticker with columns:
-    Open, High, Low, Close, Volume   (current bar OHLCV)
-    ret_1d, ret_5d, ret_21d, ret_63d, ret_252d  (lookback returns, pre-computed)
-    pe_ratio, pb_ratio, ps_ratio, ev_ebitda      (valuation multiples)
-    roe, net_margin                              (fundamental ratios — only these two are currently available)
-    earnings_surprise, revenue_surprise          (most recent quarter vs estimate)
-    analyst_revision_3m                          (3-month EPS estimate revision %)
-    vix, yield_10y, yield_2y, credit_spread      (macro — same for all tickers)
-    sentiment_score                              (news/earnings-call NLP score)
+    Open, High, Low, Close, Volume               (current bar OHLCV)
+    ret_1d, ret_5d, ret_21d, ret_63d, ret_252d   (lookback returns, pre-computed)
+    roe, net_margin                              (fundamental ratios, forward-filled quarterly)
+    earnings_surprise, revenue_surprise          (most recent quarter vs estimate, forward-filled)
+    vix                                          (CBOE VIX, same for all tickers each bar)
+
+  IMPORTANT — DO NOT USE these columns; they are placeholder NaN and will cause empty signals:
+    pe_ratio, pb_ratio, ps_ratio, ev_ebitda, analyst_revision_3m,
+    yield_10y, yield_2y, credit_spread, sentiment_score
 - `bar_date` — the current bar's date (may be None; guard with `if bar_date is None: return {}`)
 - `self._price_history` — NOT available; do not reference it
 
@@ -53,6 +54,12 @@ Return {} to hold cash.
 The `knowledge` field must explain the economic mechanism — why the factor CAUSES future returns.
 Do NOT write statements like "historically correlated", "backtested well", "data showed", "in the past".
 Write the supply-demand or behavioral-finance mechanism that links the factor to future price moves.
+
+## Universe size — CRITICAL
+The backtest universe contains approximately 10 tickers.
+- NEVER use `len(df) < 20`, `< 30`, or similar large-universe guards — they will always exit early.
+- Minimum viable check: `if len(df) < 3: return {}` is enough.
+- Selecting a "top quintile" or "top 30%" from 10 tickers yields 2-3 stocks — that is fine and intended.
 
 ## Constraints
 - predict() must return in < 1 second
@@ -163,7 +170,7 @@ Cohort: {hypothesis.cohort}
 ## Task
 Acceptance criteria (ALL must hold):
 - DSR > 0.95
-- Max drawdown < 25 %
+- Max drawdown < 60 % (universe is 10 concentrated large-cap stocks; long-only drawdowns are naturally large)
 
 Write a concise observation (what the data showed) and justification (why accept or reject).
 Set status to "accepted" only if both criteria are met.
@@ -176,16 +183,29 @@ Set status to "accepted" only if both criteria are met.
 # ---------------------------------------------------------------------------
 
 def parse_llm_json(text: str) -> dict:
-    """Strip optional markdown fences and parse JSON.
+    """Extract and parse a JSON object from LLM output.
 
-    Raises ValueError if the text is not valid JSON after stripping.
+    Handles three formats:
+    - Bare JSON object
+    - JSON wrapped in ```json ... ``` fences
+    - Prose followed by a JSON object (model ignores no-commentary instruction)
+
+    Raises ValueError if no valid JSON object is found.
     """
+    # Try: extract first {...} block (handles leading prose)
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        candidate = match.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: strip markdown fences and parse the whole thing
     stripped = text.strip()
-    # Remove ```json ... ``` or ``` ... ``` fences
     stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
     stripped = re.sub(r"\s*```$", "", stripped)
-    stripped = stripped.strip()
-    return json.loads(stripped)
+    return json.loads(stripped.strip())
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-TIMEOUT_SECONDS: int = 60
+TIMEOUT_SECONDS: int = 300
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -123,17 +123,24 @@ def _main():
     provider._data = mi
 
     import unittest.mock as mock
+    # Pre-build a sorted list of (date, bar_df) tuples once to avoid repeated groupby.
+    _date_vals = mi.index.get_level_values("date")
+    _bar_lookup = {
+        bar_date: grp.droplevel("date")
+        for bar_date, grp in mi.groupby(level="date")
+    }
+    _sorted_dates = sorted(_bar_lookup.keys())
+
     def _history(tkrs, s, e):
-        mask = (
-            (mi.index.get_level_values("date") >= pd.Timestamp(s)) &
-            (mi.index.get_level_values("date") <= pd.Timestamp(e))
-        )
+        s_ts, e_ts = pd.Timestamp(s), pd.Timestamp(e)
+        mask = (_date_vals >= s_ts) & (_date_vals <= e_ts)
         return mi[mask]
 
     def _bars(tkrs, s, e):
-        sub = _history(tkrs, s, e)
-        for bar_date, grp in sub.groupby(level="date"):
-            yield bar_date, grp.droplevel("date")
+        s_ts, e_ts = pd.Timestamp(s), pd.Timestamp(e)
+        for d in _sorted_dates:
+            if s_ts <= d <= e_ts:
+                yield d, _bar_lookup[d]
 
     with mock.patch.object(provider, "history", side_effect=_history), \\
          mock.patch.object(provider, "bars", side_effect=_bars):
@@ -149,6 +156,10 @@ def _main():
     if returns.empty:
         print(json.dumps({"sharpe": 0.0, "dsr": 0.0, "max_drawdown": 0.0, "error": "empty returns"}))
         return
+
+    # CPCV generates overlapping OOS windows: each date can appear in multiple folds.
+    # Average across folds so each calendar date contributes exactly once.
+    returns = returns.groupby(level=0).mean()
 
     import numpy as np
     from autoalpha.evaluation.alpha import compute_alpha_returns
@@ -196,13 +207,19 @@ def _run_child(
         f.write(_CHILD_HARNESS)
         harness_path = f.name
 
+    # Ensure the project root is on the child's PYTHONPATH so autoalpha is importable.
+    _project_root = str(Path(__file__).resolve().parents[2])
+    child_env = {**os.environ}
+    existing_pp = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = f"{_project_root}:{existing_pp}" if existing_pp else _project_root
+
     try:
         proc = subprocess.run(
             [sys.executable, harness_path, strategy_path, data_path, str(n_trials)],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECONDS,
-            env={**os.environ},
+            env=child_env,
         )
     except subprocess.TimeoutExpired:
         return BacktestResult(error=f"Subprocess timed out after {TIMEOUT_SECONDS}s")
