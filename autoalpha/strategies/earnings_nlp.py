@@ -40,7 +40,7 @@ _LM_POSITIVE = frozenset({
 })
 _LM_NEGATIVE = frozenset({
     "declined", "decreased", "loss", "below", "missed", "challenged", "difficult",
-    "uncertainty", "concern", "risk", "weak", "disappointing", "unfavorable",
+    "concern", "risk", "weak", "disappointing", "unfavorable",
     "reduced", "cut", "falling", "headwind", "impairment", "restructuring",
     "downturn", "adverse", "deteriorated", "underperformed",
 })

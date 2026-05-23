@@ -125,7 +125,10 @@ class QualityStrategy(Strategy):
                 continue
 
             weight = 1.0 / len(top)
-            q_date = pd.Timestamp(str(quarter.end_time.date()))
+            # Quarterly reports are typically available ~45 calendar days after quarter-end.
+            # Apply a fixed reporting lag to avoid look-ahead bias.
+            q_end = pd.Timestamp(str(quarter.end_time.date()))
+            q_date = q_end + pd.DateOffset(days=45)
             self._quarterly_targets[q_date] = {t: weight for t in top}
 
     def predict(
