@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from anthropic import Anthropic
 
 from autoalpha.evaluation.library import SignalLibrary
 from autoalpha.research.code_validator import CodeValidationError, validate_predict_body, wrap_predict_body
@@ -62,7 +62,6 @@ class ResearchLoop:
         self._max_iterations = max_iterations
         self._max_cost_usd = max_cost_usd
         self._max_refinements = max_refinements
-        self._client = Anthropic()
 
         db_kwargs = {"db_path": db_path} if db_path else {}
         self._memory = HypothesisMemory(**db_kwargs)
@@ -244,39 +243,30 @@ class ResearchLoop:
             return raw, cost
         except (ValueError, json.JSONDecodeError):
             logger.warning("JSON parse failed on first attempt — retrying with explicit instruction")
-            retry_messages = [
-                {"role": "user", "content": user},
-                {"role": "assistant", "content": raw},
-                {"role": "user", "content": "Output only the raw JSON object — no prose, no markdown fences, no commentary. Just the JSON."},
-            ]
-            raw2, cost2 = self._call_llm(system, retry_messages)
+            retry_user = user + "\n\nIMPORTANT: Respond with ONLY the raw JSON object. No prose, no markdown fences, no commentary."
+            raw2, cost2 = self._call_llm(system, retry_user)
             return raw2, cost + cost2
 
-    def _call_llm(self, system: str, user: str | list[dict]) -> tuple[str, float]:
-        """Call Claude with prompt caching and return (response_text, cost_usd)."""
-        messages = [{"role": "user", "content": user}] if isinstance(user, str) else user
-        response = self._client.messages.create(
-            model=self._model,
-            max_tokens=2048,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=messages,
+    def _call_llm(self, system: str, user: str) -> tuple[str, float]:
+        """Call Claude via CLI (uses subscription) and return (response_text, 0.0)."""
+        result = subprocess.run(
+            [
+                "claude", "-p",
+                "--system-prompt", system,
+                "--tools", "",
+                "--no-session-persistence",
+                "--model", self._model,
+                user,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
-        text = response.content[0].text if response.content else ""
+        if result.returncode != 0:
+            raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+        text = result.stdout.strip()
         logger.debug("LLM raw response (first 500 chars): %s", text[:500])
-        if not text:
-            logger.warning("LLM returned empty response. stop_reason=%s content=%r", response.stop_reason, response.content)
-        usage = response.usage
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        cost = _estimate_cost(
-            usage.input_tokens, usage.output_tokens, self._model,
-            cache_read_tokens=cache_read, cache_write_tokens=cache_write,
-        )
-        logger.debug(
-            "LLM call: %d in + %d out + %d cache_read + %d cache_write = $%.4f",
-            usage.input_tokens, usage.output_tokens, cache_read, cache_write, cost,
-        )
-        return text, cost
+        return text, 0.0
 
     # ------------------------------------------------------------------
     # Context manager
@@ -290,29 +280,3 @@ class ResearchLoop:
         self._library.close()
 
 
-# ---------------------------------------------------------------------------
-# Cost estimation
-# ---------------------------------------------------------------------------
-
-_PRICING: dict[str, tuple[float, float, float, float]] = {
-    # (input, output, cache_write, cache_read) $/1M tokens
-    "claude-opus-4-7":   (15.00, 75.00, 18.75, 1.50),
-    "claude-sonnet-4-6": (3.00,  15.00,  3.75, 0.30),
-    "claude-haiku-4-5":  (0.80,   4.00,  1.00, 0.08),
-}
-
-
-def _estimate_cost(
-    input_tokens: int,
-    output_tokens: int,
-    model: str,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-) -> float:
-    in_price, out_price, write_price, read_price = _PRICING.get(model, (15.00, 75.00, 18.75, 1.50))
-    return (
-        input_tokens * in_price
-        + output_tokens * out_price
-        + cache_write_tokens * write_price
-        + cache_read_tokens * read_price
-    ) / 1_000_000
