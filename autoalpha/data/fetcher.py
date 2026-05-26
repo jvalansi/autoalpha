@@ -177,7 +177,10 @@ def get_estimates(
     cache_path = ticker_dir / "fmp_estimates.parquet"
 
     df = _load_parquet_cache(cache_path)
-    if df is None:
+    if df is None or "epsAvg" not in df.columns:
+        # Re-fetch if cache is missing or predates the column-name fix
+        if cache_path.exists():
+            cache_path.unlink()
         data = _fmp_get(
             f"{FMP_BASE}/analyst-estimates",
             {"symbol": ticker.upper(), "period": "quarterly", "limit": 40, "apikey": key},
@@ -188,10 +191,54 @@ def get_estimates(
         if "date" not in df.columns:
             return pd.DataFrame()
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-        keep_cols = [c for c in ["date", "estimatedEpsAvg", "estimatedRevenueAvg"] if c in df.columns]
+        keep_cols = [c for c in ["date", "epsAvg", "revenueAvg"] if c in df.columns]
         df = df[keep_cols]
         df.to_parquet(cache_path, index=False)
         logger.debug("Cached estimates for %s (%d rows)", ticker, len(df))
+
+    df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+    return df.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Valuation ratios (PE, PB, PS, EV/EBITDA)
+# ---------------------------------------------------------------------------
+
+def get_valuation_ratios(
+    ticker: str,
+    start: date,
+    end: date,
+    api_key: Optional[str] = None,
+    cache_dir: Path = _CACHE_ROOT,
+) -> pd.DataFrame:
+    """Return quarterly valuation ratios (pe_ratio, pb_ratio, ps_ratio, ev_ebitda) from FMP."""
+    _check_vault(start, end)
+    key = api_key or os.environ.get("FMP_API_KEY", "")
+    if not key:
+        raise EnvironmentError("FMP_API_KEY not set")
+
+    ticker_dir = _ticker_cache_dir(ticker, cache_dir)
+    cache_path = ticker_dir / "fmp_valuation.parquet"
+
+    df = _load_parquet_cache(cache_path)
+    if df is None:
+        # /ratios has pe, pb, ps; /key-metrics has evToEBITDA
+        params = {"symbol": ticker.upper(), "period": "quarter", "limit": 40, "apikey": key}
+        ratios_data = _fmp_get(f"{FMP_BASE}/ratios", params)
+        km_data = _fmp_get(f"{FMP_BASE}/key-metrics", params)
+        if not ratios_data:
+            return pd.DataFrame()
+        ratios_df = pd.DataFrame(ratios_data)[["date", "priceToEarningsRatio", "priceToBookRatio", "priceToSalesRatio"]]
+        ratios_df.columns = ["date", "pe_ratio", "pb_ratio", "ps_ratio"]
+        if km_data:
+            km_df = pd.DataFrame(km_data)[["date", "evToEBITDA"]].rename(columns={"evToEBITDA": "ev_ebitda"})
+            df = ratios_df.merge(km_df, on="date", how="left")
+        else:
+            df = ratios_df
+            df["ev_ebitda"] = float("nan")
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        df.to_parquet(cache_path, index=False)
+        logger.debug("Cached valuation ratios for %s (%d rows)", ticker, len(df))
 
     df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
     return df.reset_index(drop=True)

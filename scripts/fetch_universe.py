@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from autoalpha.data.fetcher import get_earnings, get_fundamentals, get_ohlcv
+from autoalpha.data.fetcher import get_earnings, get_estimates, get_fundamentals, get_ohlcv, get_valuation_ratios
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
@@ -56,16 +56,17 @@ FMP_SLEEP = 0.25  # seconds between FMP calls to avoid rate-limiting
 
 
 def _is_cached(ticker: str, start: date, end: date) -> bool:
-    """Return True if OHLCV + fundamentals + earnings are already cached."""
+    """Return True if all required data is cached."""
     d = CACHE_ROOT / ticker
     if not d.exists():
         return False
-    # Check at least one year parquet exists
     if not list(d.glob("[0-9]*.parquet")):
         return False
     if not (d / "fmp_fundamentals.parquet").exists():
         return False
     if not (d / "fmp_earnings.parquet").exists():
+        return False
+    if not (d / "fmp_valuation.parquet").exists():
         return False
     return True
 
@@ -95,6 +96,20 @@ def fetch_ticker(ticker: str, start: date, end: date, api_key: str, force: bool 
         time.sleep(FMP_SLEEP)
     except Exception as exc:
         log.warning("%-6s  earnings failed: %s", ticker, exc)
+
+    log.info("%-6s  fetching estimates...", ticker)
+    try:
+        get_estimates(ticker, start, end, api_key=api_key)
+        time.sleep(FMP_SLEEP)
+    except Exception as exc:
+        log.warning("%-6s  estimates failed: %s", ticker, exc)
+
+    log.info("%-6s  fetching valuation ratios...", ticker)
+    try:
+        get_valuation_ratios(ticker, start, end, api_key=api_key)
+        time.sleep(FMP_SLEEP)
+    except Exception as exc:
+        log.warning("%-6s  valuation ratios failed: %s", ticker, exc)
 
     return True
 
