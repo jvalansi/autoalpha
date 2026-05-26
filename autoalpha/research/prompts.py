@@ -40,9 +40,12 @@ Arguments available inside predict():
     earnings_surprise, revenue_surprise          (most recent quarter vs estimate, forward-filled)
     vix                                          (CBOE VIX, same for all tickers each bar)
 
-  IMPORTANT — DO NOT USE these columns; they are placeholder NaN and will cause empty signals:
-    pe_ratio, pb_ratio, ps_ratio, ev_ebitda, analyst_revision_3m,
-    yield_10y, yield_2y, credit_spread, sentiment_score
+  Additional columns (now populated, safe to use):
+    pe_ratio, pb_ratio, ps_ratio, ev_ebitda     (valuation ratios, forward-filled quarterly)
+    yield_10y, yield_2y, credit_spread          (macro rates from FRED, same for all tickers each bar)
+    analyst_revision_3m                         (QoQ EPS estimate change %, ~71% fill; guard with .dropna())
+  DO NOT USE (still NaN):
+    sentiment_score
 - `bar_date` — the current bar's date (may be None; guard with `if bar_date is None: return {}`)
 - `self._price_history` — NOT available; do not reference it
 
@@ -66,6 +69,7 @@ The backtest universe contains approximately 49 tickers (diversified S&P 500 lar
 - No I/O, no network calls, no imports inside predict()
 - Use only `bar_data` columns listed above; do not assume other columns exist
 - Handle missing data: guard with `.dropna()` or `.fillna()` before ranking
+- predict() body must be **80 lines of Python or fewer** (concise is better; do not pad with comments)
 """
 
 # ---------------------------------------------------------------------------

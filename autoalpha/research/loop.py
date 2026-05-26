@@ -167,7 +167,7 @@ class ResearchLoop:
         cohort_weights = self._memory.get_cohort_weight_summary(self._library.all_weights())
         system, user = build_generation_prompt(history, cohort_weights, trial_number)
 
-        raw, cost = self._call_llm(system, user)
+        raw, cost = self._call_llm_json(system, user)
         return self._parse_and_store(raw, trial_number, cost)
 
     def _refine(self, pending: dict, trial_number: int) -> tuple[Optional[Hypothesis], int, float]:
@@ -178,7 +178,7 @@ class ResearchLoop:
             "max_drawdown": pending.get("max_drawdown") or 0.0,
         }
         system, user = build_refinement_prompt(original_hyp, backtest_result, trial_number)
-        raw, cost = self._call_llm(system, user)
+        raw, cost = self._call_llm_json(system, user)
         result = self._parse_and_store(raw, trial_number, cost)
         # Always increment even on parse failure — a failed refinement attempt still counts
         # toward the max_refinements cap so the loop can't retry the same hypothesis forever.
@@ -236,13 +236,30 @@ class ResearchLoop:
             n_active,
         )
 
-    def _call_llm(self, system: str, user: str) -> tuple[str, float]:
+    def _call_llm_json(self, system: str, user: str) -> tuple[str, float]:
+        """Call LLM and retry once if the response is not parseable JSON."""
+        raw, cost = self._call_llm(system, user)
+        try:
+            parse_llm_json(raw)
+            return raw, cost
+        except (ValueError, json.JSONDecodeError):
+            logger.warning("JSON parse failed on first attempt — retrying with explicit instruction")
+            retry_messages = [
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": "Output only the raw JSON object — no prose, no markdown fences, no commentary. Just the JSON."},
+            ]
+            raw2, cost2 = self._call_llm(system, retry_messages)
+            return raw2, cost + cost2
+
+    def _call_llm(self, system: str, user: str | list[dict]) -> tuple[str, float]:
         """Call Claude with prompt caching and return (response_text, cost_usd)."""
+        messages = [{"role": "user", "content": user}] if isinstance(user, str) else user
         response = self._client.messages.create(
             model=self._model,
             max_tokens=2048,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
+            messages=messages,
         )
         text = response.content[0].text if response.content else ""
         logger.debug("LLM raw response (first 500 chars): %s", text[:500])
