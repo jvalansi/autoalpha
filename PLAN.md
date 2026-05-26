@@ -168,10 +168,10 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 ## Phase 5 — Feature Enrichment & Signal Library Growth
 Goal: fill in the NaN feature columns and run enough iterations to build a library large enough for meaningful Darwinian weighting.
 
-**Priority 1 — Fill NaN columns (unlocks a new class of hypotheses):**
-- [ ] `pe_ratio`, `pb_ratio`, `ps_ratio`, `ev_ebitda` — fetch from FMP `/key-metrics` endpoint; add to `fetch_universe.py` and `build_loop_dataset.py`; these are available for all 49 tickers from 2018
-- [ ] `yield_10y`, `yield_2y`, `credit_spread` — fetch from FRED via `pandas_datareader` or `fredapi`; DGS10, DGS2, ICE BofA US Corporate Bond Spread (BAMLC0A0CMEY); add to build scripts as single time series (same value all tickers per bar, like vix)
-- [ ] `analyst_revision_3m` — already fetched via FMP `/analyst-estimates` into `fmp_estimates.parquet`; compute 3-month EPS estimate change % and wire into `build_loop_dataset.py`
+**Priority 1 — Fill NaN columns (unlocks a new class of hypotheses):** ✓
+- [x] `pe_ratio`, `pb_ratio`, `ps_ratio` — from FMP `/ratios`; `ev_ebitda` — from FMP `/key-metrics`; cached as `fmp_valuation.parquet`; 100% fill rate
+- [x] `yield_10y`, `yield_2y`, `credit_spread` — DGS10, DGS2, BAA10Y (Moody's BAA minus 10yr Treasury) from FRED public CSV endpoint (no auth); 100% fill rate
+- [x] `analyst_revision_3m` — recomputed from FMP `/analyst-estimates` (`epsAvg` QoQ change %); fixed stale cache bug (wrong column names); 71% fill rate (NaN for first quarter per ticker, expected)
 
 **Priority 2 — Build larger signal library:**
 - [ ] Run 3–5 more 20-iteration batches (`python scripts/run_loop.py --iterations 20 --budget 5.00`) to target 15–20 active signals; Darwinian weighting is meaningful only with ≥10 signals
