@@ -260,7 +260,7 @@ class ResearchLoop:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
         if result.returncode != 0:
             raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
