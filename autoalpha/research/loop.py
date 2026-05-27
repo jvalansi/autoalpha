@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 
 from autoalpha.evaluation.library import SignalLibrary
 from autoalpha.research.code_validator import CodeValidationError, validate_predict_body, wrap_predict_body
@@ -32,6 +34,43 @@ from autoalpha.research.prompts import (
 from autoalpha.research.subprocess_runner import BacktestResult, run_strategy_subprocess
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Slack notifier
+# ---------------------------------------------------------------------------
+
+
+class _SlackNotifier:
+    """Posts loop events to a Slack channel/thread via the bot token.
+
+    Reads from env vars:
+      SLACK_BOT_TOKEN      — required for any posting
+      SLACK_LOOP_CHANNEL   — channel ID to post to
+      SLACK_LOOP_THREAD_TS — thread timestamp (optional; posts in-thread if set)
+    """
+
+    def __init__(self) -> None:
+        self._token = os.environ.get("SLACK_BOT_TOKEN", "")
+        self._channel = os.environ.get("SLACK_LOOP_CHANNEL", "")
+        self._thread_ts = os.environ.get("SLACK_LOOP_THREAD_TS", "")
+        self._enabled = bool(self._token and self._channel)
+
+    def post(self, text: str) -> None:
+        if not self._enabled:
+            return
+        payload: dict = {"channel": self._channel, "text": text}
+        if self._thread_ts:
+            payload["thread_ts"] = self._thread_ts
+        try:
+            requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {self._token}"},
+                json=payload,
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning("Slack notification failed: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Acceptance thresholds
@@ -62,6 +101,7 @@ class ResearchLoop:
         self._max_iterations = max_iterations
         self._max_cost_usd = max_cost_usd
         self._max_refinements = max_refinements
+        self._slack = _SlackNotifier()
 
         db_kwargs = {"db_path": db_path} if db_path else {}
         self._memory = HypothesisMemory(**db_kwargs)
@@ -156,6 +196,10 @@ class ResearchLoop:
                 )
 
         logger.info("Loop complete after %d iterations. Total cost: $%.3f", iteration, total_cost)
+        n_active = self._memory.get_active_count()
+        self._slack.post(
+            f"*autoalpha loop complete* — {iteration} iterations  |  {n_active} active signals total"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -233,6 +277,11 @@ class ResearchLoop:
             result.dsr,
             result.max_drawdown * 100,
             n_active,
+        )
+        self._slack.post(
+            f":white_check_mark: *ACCEPTED* — _{hyp.concise_reason}_\n"
+            f"Sharpe={result.sharpe:.2f}  DSR={result.dsr:.3f}  DD={result.max_drawdown * 100:.1f}%  "
+            f"active_signals={n_active}"
         )
 
     def _call_llm_json(self, system: str, user: str) -> tuple[str, float]:

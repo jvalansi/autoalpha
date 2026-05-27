@@ -30,7 +30,14 @@ def main() -> None:
     parser.add_argument("--db", type=str, default=None, help="Path to memory.db (default: research/memory.db)")
     parser.add_argument("--data", type=str, default="data/loop_data.parquet", help="Path to enriched parquet")
     parser.add_argument("--model", type=str, default="claude-sonnet-4-6", help="Claude model to use")
+    parser.add_argument("--slack-channel", type=str, default=None, help="Slack channel ID for notifications")
+    parser.add_argument("--slack-thread-ts", type=str, default=None, help="Slack thread timestamp for notifications")
     args = parser.parse_args()
+
+    if args.slack_channel:
+        os.environ["SLACK_LOOP_CHANNEL"] = args.slack_channel
+    if args.slack_thread_ts:
+        os.environ["SLACK_LOOP_THREAD_TS"] = args.slack_thread_ts
 
     data_path = str(Path(args.data).resolve())
     if not Path(data_path).exists():
