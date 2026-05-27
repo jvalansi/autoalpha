@@ -36,14 +36,18 @@ Arguments available inside predict():
 - `bar_data` — DataFrame indexed by ticker with columns:
     Open, High, Low, Close, Volume               (current bar OHLCV)
     ret_1d, ret_5d, ret_21d, ret_63d, ret_252d   (lookback returns, pre-computed)
-    roe, net_margin                              (fundamental ratios, forward-filled quarterly)
+    rsi_14                                       (14-day RSI, 0–100; >70 overbought, <30 oversold)
+    pct_from_52w_high                            (distance from 52-week high; always ≤ 0)
+    vol_21d                                      (21-day annualized realized volatility)
+    roe, net_margin, debt_to_equity              (fundamentals, forward-filled quarterly)
     earnings_surprise, revenue_surprise          (most recent quarter vs estimate, forward-filled)
-    vix                                          (CBOE VIX, same for all tickers each bar)
-
-  Additional columns (now populated, safe to use):
-    pe_ratio, pb_ratio, ps_ratio, ev_ebitda     (valuation ratios, forward-filled quarterly)
-    yield_10y, yield_2y, credit_spread          (macro rates from FRED, same for all tickers each bar)
+    pe_ratio, pb_ratio, ps_ratio, ev_ebitda      (valuation ratios, forward-filled quarterly)
+    fcf_yield                                    (free cash flow yield, forward-filled quarterly; guard with .dropna())
     analyst_revision_3m                         (QoQ EPS estimate change %, ~71% fill; guard with .dropna())
+    vix                                          (CBOE VIX, same for all tickers each bar)
+    yield_10y, yield_2y, credit_spread           (macro rates from FRED, same for all tickers each bar)
+    yield_curve                                  (yield_10y - yield_2y; positive = normal, negative = inverted)
+    sector                                       (GICS sector string, e.g. "Technology", "Financials")
   DO NOT USE (still NaN):
     sentiment_score
 - `bar_date` — the current bar's date (may be None; guard with `if bar_date is None: return {}`)
