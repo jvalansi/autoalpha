@@ -191,7 +191,9 @@ def fetch_vix(start: str, end: str) -> pd.Series:
 def point_in_time_join(daily_index: pd.DatetimeIndex, df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(index=daily_index)
-    return df.set_index(date_col).reindex(daily_index, method="ffill")
+    df = df.set_index(date_col)
+    df = df[~df.index.duplicated(keep="last")]
+    return df.reindex(daily_index, method="ffill")
 
 
 def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame) -> pd.DataFrame:

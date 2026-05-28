@@ -214,7 +214,9 @@ def point_in_time_join(daily_index: pd.DatetimeIndex, df: pd.DataFrame, date_col
     """Forward-fill quarterly/event data onto a daily trading calendar."""
     if df.empty:
         return pd.DataFrame(index=daily_index)
-    df = df.set_index(date_col).reindex(daily_index, method="ffill")
+    df = df.set_index(date_col)
+    df = df[~df.index.duplicated(keep="last")]
+    df = df.reindex(daily_index, method="ffill")
     return df
 
 
