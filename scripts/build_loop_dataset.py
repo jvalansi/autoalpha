@@ -89,6 +89,9 @@ def load_fundamentals(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"])
     df = df[df["date"] < VAULT_START].sort_values("date")
+    for col in ["totalStockholdersEquity", "revenue", "netIncome", "netDebt"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     equity = df["totalStockholdersEquity"].replace(0, np.nan)
     revenue = df["revenue"].replace(0, np.nan)
@@ -121,7 +124,7 @@ def load_estimates(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"])
     df = df[df["date"] < VAULT_START].sort_values("date").reset_index(drop=True)
-    # 3-month EPS revision: change from previous quarter's estimate
+    df["epsAvg"] = pd.to_numeric(df["epsAvg"], errors="coerce")
     eps = df["epsAvg"].replace(0, np.nan).abs()
     df["analyst_revision_3m"] = (df["epsAvg"] - df["epsAvg"].shift(1)) / eps.shift(1)
     return df[["date", "analyst_revision_3m"]].dropna(subset=["date"])
@@ -160,6 +163,11 @@ def load_earnings(ticker: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df[df["date"] < VAULT_START].sort_values("date")
 
+    for col in ["epsEstimated", "epsActual", "revenueEstimated", "revenueActual"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        else:
+            df[col] = np.nan
     eps_est = df["epsEstimated"].replace(0, np.nan).abs()
     rev_est = df["revenueEstimated"].replace(0, np.nan).abs()
     df["earnings_surprise"] = (df["epsActual"] - df["epsEstimated"]) / eps_est
@@ -246,11 +254,28 @@ def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame) -> pd.DataFra
     for col in NAN_COLS:
         df[col] = np.nan
 
+    # Enforce canonical column order; missing columns become NaN
+    canonical = [
+        "Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits",
+        "ret_1d", "ret_5d", "ret_21d", "ret_63d", "ret_252d",
+        "rsi_14", "pct_from_52w_high", "vol_21d",
+        "roe", "net_margin", "debt_to_equity",
+        "earnings_surprise", "revenue_surprise",
+        "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
+        "analyst_revision_3m", "dividend_yield", "fcf_yield",
+        "vix", "yield_10y", "yield_2y", "credit_spread", "yield_curve",
+        "sector", "sentiment_score",
+    ]
+    df = df.reindex(columns=canonical)
+
     df.index = pd.MultiIndex.from_product([[ticker], df.index], names=["ticker", "date"])
     return df
 
 
 def main() -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     log.info("Building loop dataset for tickers: %s", TICKERS)
 
     start = "2018-01-01"
@@ -260,29 +285,42 @@ def main() -> None:
     macro = fetch_macro(start, end)
     macro.index = pd.to_datetime(macro.index).tz_localize(None).normalize()
 
-    frames = []
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    writer = None
+    n_tickers = 0
+    min_date = max_date = None
+
     for ticker in TICKERS:
         log.info("Processing %s...", ticker)
         df = build_ticker(ticker, vix, macro)
-        if not df.empty:
-            frames.append(df)
+        if df.empty:
+            continue
+        # Swap to (date, ticker) index before writing
+        df = df.swaplevel()
+        df.index.names = ["date", "ticker"]
+        # Coerce all numeric columns to float64 for consistent schema across tickers
+        for col in df.select_dtypes(include="number").columns:
+            df[col] = df[col].astype("float64")
+        table = pa.Table.from_pandas(df)
+        if writer is None:
+            writer = pq.ParquetWriter(OUT_PATH, table.schema)
+        else:
+            table = table.cast(writer.schema)
+        writer.write_table(table)
+        n_tickers += 1
+        dates = df.index.get_level_values("date")
+        min_date = dates.min() if min_date is None else min(min_date, dates.min())
+        max_date = dates.max() if max_date is None else max(max_date, dates.max())
 
-    if not frames:
+    if writer is None:
         log.error("No data built — aborting")
         return
+    writer.close()
 
-    combined = pd.concat(frames).sort_index()
-    # Reorder index to (date, ticker) as the harness expects
-    combined = combined.swaplevel().sort_index()
-    combined.index.names = ["date", "ticker"]
-
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(OUT_PATH)
-    log.info("Saved %s  shape=%s  date range=%s to %s  columns=%s",
-             OUT_PATH, combined.shape,
-             combined.index.get_level_values("date").min().date(),
-             combined.index.get_level_values("date").max().date(),
-             list(combined.columns))
+    log.info("Saved %s  tickers=%d  date range=%s to %s",
+             OUT_PATH, n_tickers,
+             min_date.date() if min_date else "?",
+             max_date.date() if max_date else "?")
 
 
 if __name__ == "__main__":
