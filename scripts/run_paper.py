@@ -1,7 +1,8 @@
 """Nightly paper trading run for all active signals.
 
-Uses loop_data.parquet for strategy fit (pre-vault history) and
-vault_data.parquet as the enriched live feed (2024-05-21 → today).
+vault_data.parquet is the enriched live feed (2024-05-21 → today).
+Only the paper-period slice is loaded via PyArrow filter pushdown to keep
+memory usage low on the 2 GB instance.
 
 P&L is measured from PAPER_START (stored in data/paper_state.json on
 first run) so only forward-looking bars count toward the 30-day gate.
@@ -21,9 +22,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import date
 from pathlib import Path
-from unittest import mock
 
 import pandas as pd
 import requests
@@ -40,7 +39,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(
                     datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
 
-LOOP_DATA = Path("data/loop_data.parquet")
 VAULT_DATA = Path("data/vault_data.parquet")
 STATE_FILE = Path("data/paper_state.json")
 PNL_FILE = Path("data/paper_pnl.json")
@@ -136,16 +134,9 @@ def main() -> None:
         log.error("vault_data.parquet not found — run scripts/build_vault_dataset.py first")
         sys.exit(1)
 
-    # Load data
-    log.info("Loading datasets...")
-    loop_mi = pd.read_parquet(LOOP_DATA)
-    vault_mi = pd.read_parquet(VAULT_DATA)
-    tickers = vault_mi.index.get_level_values("ticker").unique().tolist()
-
-    vault_dates = vault_mi.index.get_level_values("date").unique().sort_values()
     today = pd.Timestamp.today().normalize()
 
-    # Determine paper start date
+    # Determine paper start date before loading data (so we can filter the parquet)
     state: dict = {}
     if STATE_FILE.exists():
         state = json.loads(STATE_FILE.read_text())
@@ -154,17 +145,41 @@ def main() -> None:
         STATE_FILE.write_text(json.dumps(state))
         log.info("Paper trading started — paper_start=%s", state["paper_start"])
     paper_start = pd.Timestamp(state["paper_start"])
+
+    # Load only the paper-period slice from vault using PyArrow date filter pushdown.
+    # This avoids loading the full 1.3M-row dataset (~1 GB) when we only need a few weeks.
+    log.info("Loading vault data from %s onwards...", paper_start.date())
+    import pyarrow.dataset as _ds
+    _vault_ds = _ds.dataset(str(VAULT_DATA), format="parquet")
+    _vault_table = _vault_ds.to_table(
+        filter=_ds.field("date") >= paper_start.to_pydatetime()
+    )
+    vault_mi = _vault_table.to_pandas()
+    if not isinstance(vault_mi.index, pd.MultiIndex):
+        idx_cols = [c for c in ["date", "ticker"] if c in vault_mi.columns]
+        if idx_cols:
+            vault_mi = vault_mi.set_index(idx_cols)
+    vault_mi.index.names = ["date", "ticker"]
+    vault_mi.index = pd.MultiIndex.from_arrays([
+        pd.to_datetime(vault_mi.index.get_level_values("date")),
+        vault_mi.index.get_level_values("ticker"),
+    ], names=["date", "ticker"])
+    vault_mi = vault_mi.sort_index(level="date", sort_remaining=False)
+
+    tickers = vault_mi.index.get_level_values("ticker").unique().tolist()
+    vault_dates = vault_mi.index.get_level_values("date").unique().sort_values()
     paper_dates = vault_dates[vault_dates >= paper_start]
 
     if paper_dates.empty:
         log.info("No paper bars yet (paper_start=%s, latest vault bar=%s)",
-                 paper_start.date(), vault_dates.max().date())
+                 paper_start.date(), vault_dates.max().date() if len(vault_dates) else "none")
         return
 
     paper_start_date = paper_dates.min().to_pydatetime().date()
     paper_end_date = paper_dates.max().to_pydatetime().date()
     n_paper_days = len(paper_dates)
-    log.info("Paper period: %s → %s  (%d trading days)", paper_start_date, paper_end_date, n_paper_days)
+    log.info("Paper period: %s → %s  (%d trading days, %d tickers)",
+             paper_start_date, paper_end_date, n_paper_days, len(tickers))
 
     # Load active signals
     memory = HypothesisMemory()
@@ -174,11 +189,8 @@ def main() -> None:
     memory.close()
     log.info("Active signals: %d", len(rows))
 
-    loop_provider = make_parquet_provider(loop_mi)
+    # fit() is a no-op for all generated strategies — no need to load loop_data
     vault_provider = make_parquet_provider(vault_mi)
-
-    loop_start = loop_mi.index.get_level_values("date").min().to_pydatetime().date()
-    loop_end = loop_mi.index.get_level_values("date").max().to_pydatetime().date()
 
     # Benchmark: equal-weight all tickers, buy-and-hold over paper period
     bm_bars = [bar_df for d, bar_df in vault_provider.bars(tickers, paper_start_date, paper_end_date)]
@@ -203,9 +215,7 @@ def main() -> None:
             log.warning("  Failed to load strategy: %s", exc)
             continue
 
-        # Fit on full pre-vault history
-        full_history = loop_provider.history(tickers, loop_start, loop_end)
-        strategy.fit(full_history)
+        # fit() is a no-op for all generated strategies — skip
 
         # Run on paper period
         executor = SimExecutor(initial_capital=100_000, cost_bps=11)

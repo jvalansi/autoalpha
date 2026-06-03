@@ -17,11 +17,13 @@ exec >> "$LOG" 2>&1
 echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 
 # Load env vars (SLACK_BOT_TOKEN, SLACK_LOOP_CHANNEL, etc.)
+# Use grep/export instead of source to avoid issues with special chars in values
 if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
+    while IFS='=' read -r key value; do
+        # Skip blank lines and comments
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        export "$key"="$value"
+    done < <(grep -v '^\s*#' "$ENV_FILE" | grep -v '^\s*$')
 fi
 
 cd "$REPO_DIR"
