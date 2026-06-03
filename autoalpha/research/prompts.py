@@ -63,10 +63,11 @@ Do NOT write statements like "historically correlated", "backtested well", "data
 Write the supply-demand or behavioral-finance mechanism that links the factor to future price moves.
 
 ## Universe size — CRITICAL
-The backtest universe contains approximately 49 tickers (diversified S&P 500 large-caps).
-- A top-quintile selection (~20% of 49) yields ~10 stocks — appropriate for diversification.
-- Minimum viable guard: `if len(df) < 5: return {}`.
-- Do NOT use guards like `len(df) < 20` on a 49-ticker universe — that's fine and expected.
+The backtest universe contains ~2,550 US stocks (≥$300M market cap). Each backtest samples 400 tickers across ~1,606 trading days (CPCV 4-split/2-test: ~800 OOS days, ~800 in-sample days).
+- A top-quintile selection (~20% of 400) yields ~80 stocks — use equal weights across the selected set.
+- Minimum viable guard: `if len(df) < 20: return {}`.
+- Do NOT use guards like `len(df) < 200` — 400 tickers is the backtest size, expect ~80 qualifying stocks.
+- Weights MUST sum to exactly 1.0. Always normalize: `w = {t: 1/len(sel) for t in sel}` or similar.
 
 ## Constraints
 - predict() must return in < 1 second
@@ -177,8 +178,9 @@ Cohort: {hypothesis.cohort}
 
 ## Task
 Acceptance criteria (ALL must hold):
-- DSR > 0.95
-- Max drawdown < 60 % (universe is 10 concentrated large-cap stocks; long-only drawdowns are naturally large)
+- DSR > 0.65  (DSR = PSR vs market: probability the strategy's true Sharpe exceeds the market Sharpe of ~0.62; need 65%+ confidence we beat the market, roughly equivalent to an annualized Sharpe > 0.9)
+- Max drawdown < 30 % (universe is ~80 diversified stocks; a well-diversified long-only strategy should have low drawdown)
+- Active days > 50 (strategy must hold positions on at least 50 OOS trading days; fewer observations make the Sharpe statistically unreliable regardless of its magnitude)
 
 Write a concise observation (what the data showed) and justification (why accept or reject).
 Set status to "accepted" only if both criteria are met.

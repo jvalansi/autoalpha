@@ -14,6 +14,17 @@ from autoalpha.core.executors import Executor
 logger = logging.getLogger(__name__)
 
 
+def _normalize_targets(targets: dict[str, float]) -> dict[str, float]:
+    """Clamp weights to [0,1] and normalize so they sum to at most 1.0."""
+    if not targets:
+        return targets
+    pos = {t: max(0.0, w) for t, w in targets.items() if w > 0}
+    total = sum(pos.values())
+    if total <= 0:
+        return {}
+    return {t: w / total for t, w in pos.items()}
+
+
 class Runner:
     """Orchestrates the strategy evaluation loop.
 
@@ -73,10 +84,11 @@ class Runner:
             prev_targets: dict[str, float] = {}
             for bar_date, bar_df in self._provider.bars(self._tickers, oos_start, oos_end):
                 open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
-                # Execute previous bar's signals at today's open (next-bar fill model)
-                if prev_targets and open_prices:
+                # Always execute (even with empty targets) so cash days appear in NAV history
+                # and positions are properly closed when strategy returns {}.
+                if open_prices:
                     self._executor.execute(prev_targets, bar_date, open_prices)
-                prev_targets = self._strategy.predict(bar_df, bar_date=bar_date)
+                prev_targets = _normalize_targets(self._strategy.predict(bar_df, bar_date=bar_date))
 
             fold_returns = self._executor.returns()
             if not fold_returns.empty:
@@ -97,4 +109,4 @@ class Runner:
             open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
             if prev_targets and open_prices:
                 self._executor.execute(prev_targets, bar_date, open_prices)
-            prev_targets = self._strategy.predict(bar_df, bar_date=bar_date)
+            prev_targets = _normalize_targets(self._strategy.predict(bar_df, bar_date=bar_date))

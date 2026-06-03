@@ -68,6 +68,17 @@ class SimExecutor(Executor):
         nav = self._compute_nav(prices)
         self._nav_history[bar_date] = nav
 
+        # Close positions not in targets (strategy said "go to cash" for these)
+        for ticker in list(self._positions.keys()):
+            if ticker not in targets:
+                price = prices.get(ticker)
+                if price and price > 0:
+                    shares = self._positions.pop(ticker)
+                    trade_value = abs(shares) * price
+                    cost = trade_value * (self._cost_bps / 10_000)
+                    # Selling: receive proceeds, pay cost
+                    self._cash += shares * price - cost
+
         for ticker, target_frac in targets.items():
             price = prices.get(ticker)
             if price is None or price <= 0:

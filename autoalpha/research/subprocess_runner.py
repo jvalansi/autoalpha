@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-TIMEOUT_SECONDS: int = 300
+TIMEOUT_SECONDS: int = 600
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -28,6 +28,7 @@ class BacktestResult:
     sharpe: float = 0.0
     dsr: float = 0.0
     max_drawdown: float = 0.0
+    activity_rate: float = 0.0
     returns: list[float] = field(default_factory=list)
     return_dates: list[str] = field(default_factory=list)
     error: Optional[str] = None
@@ -41,6 +42,7 @@ class BacktestResult:
             "sharpe": self.sharpe,
             "dsr": self.dsr,
             "max_drawdown": self.max_drawdown,
+            "activity_rate": self.activity_rate,
             "error": self.error,
         }
 
@@ -107,17 +109,52 @@ def _main():
     spec.loader.exec_module(mod)
     strategy = mod.strategy
 
-    # Load market data
-    mi = pd.read_parquet(data_path)
-    dates = mi.index.get_level_values("date").unique().sort_values()
+    import pyarrow.dataset as _ds
+    import pyarrow as _pa
+    import random
 
     from autoalpha.core.providers import HistoricalProvider
     from autoalpha.core.executors import SimExecutor
     from autoalpha.core.runner import Runner
     from autoalpha.backtest.cpcv import CPCV
-    from autoalpha.evaluation.sharpe import deflated_sharpe
+    from autoalpha.evaluation.sharpe import probabilistic_sharpe
 
-    tickers = mi.index.get_level_values("ticker").unique().tolist()
+    # Read ticker list cheaply using pyarrow (avoids loading all row data)
+    _dataset = _ds.dataset(data_path, format="parquet")
+    _all_tickers = (
+        _dataset.to_table(columns=["ticker"])
+        .column("ticker")
+        .to_pylist()
+    )
+    _all_tickers = sorted(set(_all_tickers))
+
+    # Sample tickers if universe is large — use n_trials as seed so each
+    # trial tests a different slice, improving coverage across iterations.
+    MAX_BACKTEST_TICKERS = 400
+    if len(_all_tickers) > MAX_BACKTEST_TICKERS:
+        rng = random.Random(n_trials)
+        _all_tickers = sorted(rng.sample(_all_tickers, MAX_BACKTEST_TICKERS))
+
+    # Load only the sampled tickers via filter pushdown — row groups are
+    # organized per ticker so this reads ~400/2550 of the file.
+    _table = _dataset.to_table(
+        filter=_ds.field("ticker").isin(_all_tickers)
+    )
+    # Restore pandas MultiIndex from pyarrow table
+    mi = _table.to_pandas()
+    if not isinstance(mi.index, pd.MultiIndex):
+        idx_cols = [c for c in ["date", "ticker"] if c in mi.columns]
+        if idx_cols:
+            mi = mi.set_index(idx_cols)
+    mi.index.names = ["date", "ticker"]
+    mi.index = pd.MultiIndex.from_arrays([
+        pd.to_datetime(mi.index.get_level_values("date")),
+        mi.index.get_level_values("ticker"),
+    ], names=["date", "ticker"])
+    mi = mi.sort_index(level="date", sort_remaining=False)
+
+    tickers = _all_tickers
+    dates = mi.index.get_level_values("date").unique().sort_values()
 
     provider = HistoricalProvider.__new__(HistoricalProvider)
     provider._data = mi
@@ -148,18 +185,22 @@ def _main():
         executor = SimExecutor(initial_capital=100_000, cost_bps=11)
         runner = Runner(strategy, provider, executor, tickers)
 
-        cpcv = CPCV(n_splits=6, n_test_splits=2)
+        cpcv = CPCV(n_splits=4, n_test_splits=2)
         folds = cpcv.to_runner_folds(dates)
 
         returns = runner.run_backtest(folds)
 
     if returns.empty:
-        print(json.dumps({"sharpe": 0.0, "dsr": 0.0, "max_drawdown": 0.0, "error": "empty returns"}))
+        print(json.dumps({"sharpe": 0.0, "dsr": 0.0, "max_drawdown": 0.0, "activity_rate": 0.0, "error": "empty returns"}))
         return
 
     # CPCV generates overlapping OOS windows: each date can appear in multiple folds.
     # Average across folds so each calendar date contributes exactly once.
     returns = returns.groupby(level=0).mean()
+
+    # Active days: number of OOS bars where strategy held positions (non-zero return)
+    active_days = int((returns != 0).sum())
+    activity_rate = float((returns != 0).mean())
 
     import numpy as np
     from autoalpha.evaluation.alpha import compute_alpha_returns
@@ -168,7 +209,8 @@ def _main():
 
     daily = alpha_series.values
     sharpe = float(daily.mean() / daily.std() * (252 ** 0.5)) if daily.std() > 0 else 0.0
-    dsr = float(deflated_sharpe(alpha_series, n_trials=n_trials))
+    # PSR vs market benchmark (SPY annualized Sharpe ~0.62): P(true SR > market SR)
+    dsr = float(probabilistic_sharpe(alpha_series, benchmark_sr=0.62))
     # Anchor NAV at 1.0 so losses on the very first bar are captured.
     nav = pd.concat([pd.Series([1.0]), (1 + alpha_series).cumprod()])
     roll_max = nav.cummax()
@@ -179,6 +221,8 @@ def _main():
         "sharpe": sharpe,
         "dsr": dsr,
         "max_drawdown": max_drawdown,
+        "activity_rate": activity_rate,
+        "active_days": active_days,
         "returns": daily.tolist(),
         "return_dates": alpha_series.index.strftime("%Y-%m-%d").tolist(),
         "error": None,
@@ -246,6 +290,7 @@ def _run_child(
             sharpe=data.get("sharpe", 0.0),
             dsr=data.get("dsr", 0.0),
             max_drawdown=data.get("max_drawdown", 0.0),
+            activity_rate=data.get("activity_rate", 0.0),
             error=data["error"],
         )
 
@@ -253,6 +298,7 @@ def _run_child(
         sharpe=data.get("sharpe", 0.0),
         dsr=data.get("dsr", 0.0),
         max_drawdown=data.get("max_drawdown", 0.0),
+        activity_rate=data.get("activity_rate", 0.0),
         returns=data.get("returns", []),
         return_dates=data.get("return_dates", []),
     )

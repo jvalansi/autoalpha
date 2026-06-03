@@ -76,8 +76,9 @@ class _SlackNotifier:
 # Acceptance thresholds
 # ---------------------------------------------------------------------------
 
-_DSR_THRESHOLD = 0.95
-_MAX_DRAWDOWN_THRESHOLD = 0.60  # 60% — concentrated 10-stock long-only universe
+_DSR_THRESHOLD = 0.65  # PSR vs market benchmark 0.62: ~65% confident true SR exceeds market (≈ Sharpe > 0.9)
+_MAX_DRAWDOWN_THRESHOLD = 0.30  # 30% — diversified ~80-stock long-only universe
+_MIN_ACTIVE_DAYS = 50           # need at least 50 invested OOS days for meaningful stats
 
 # ---------------------------------------------------------------------------
 # Loop
@@ -183,15 +184,29 @@ class ResearchLoop:
                 justification=justification,
             )
 
+            # Hard-coded activity gate (LLM can't override this)
+            active_days = int(result.activity_rate * len(result.returns)) if result.returns else 0
+            if status == "accepted" and active_days < _MIN_ACTIVE_DAYS:
+                status = "rejected"
+                justification = (
+                    f"Only {active_days} active OOS days < {_MIN_ACTIVE_DAYS} minimum — "
+                    "too few observations for the Sharpe to be statistically meaningful."
+                )
+                self._memory.update_result(hyp_id, status="rejected", sharpe=result.sharpe,
+                                           dsr=result.dsr, max_drawdown=result.max_drawdown,
+                                           additional_cost_usd=0.0, observation=observation,
+                                           justification=justification)
+
             if status == "accepted":
                 self._accept(hyp, hyp_id, result)
             else:
                 self._memory.increment_refinement_count(hyp_id)
                 logger.info(
-                    "Rejected — Sharpe=%.2f DSR=%.3f DD=%.1f%% — %s",
+                    "Rejected — Sharpe=%.2f DSR=%.3f DD=%.1f%% Activity=%.0f%% — %s",
                     result.sharpe,
                     result.dsr,
                     result.max_drawdown * 100,
+                    result.activity_rate * 100,
                     justification[:120],
                 )
 
