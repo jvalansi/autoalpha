@@ -113,18 +113,75 @@ def make_parquet_provider(mi: pd.DataFrame) -> HistoricalProvider:
 # Main
 # ---------------------------------------------------------------------------
 
+def _report_level(today: pd.Timestamp) -> str:
+    """Return the highest-priority report level for today."""
+    m, d = today.month, today.day
+    # Quarterly: first calendar day of Jan/Apr/Jul/Oct (or first weekday if weekend)
+    if m in (1, 4, 7, 10) and d <= 3 and today.weekday() < 5:
+        # Check no earlier weekday existed in month (i.e. this is the first weekday)
+        if all((today - pd.Timedelta(days=i)).month != m or
+               (today - pd.Timedelta(days=i)).weekday() >= 5
+               for i in range(1, d)):
+            return "quarterly"
+    # Monthly: first weekday of the month
+    if d <= 3 and today.weekday() < 5:
+        if all((today - pd.Timedelta(days=i)).month != m or
+               (today - pd.Timedelta(days=i)).weekday() >= 5
+               for i in range(1, d)):
+            return "monthly"
+    # Weekly: Friday
+    if today.weekday() == 4:
+        return "weekly"
+    return "daily"
+
+
+def _fmt_signal_table(signal_results: list[dict]) -> str:
+    lines = ["*Per-signal attribution:*"]
+    for s in signal_results:
+        alpha = s["total_return"] - 0.0  # will be relative to benchmark below
+        lines.append(
+            f"  • {s['name']}: Ret={s['total_return']:+.1f}%  "
+            f"Sharpe={s['sharpe']:.2f}  DD={s['max_drawdown']:.1f}%  n={s['n_bars']}"
+        )
+    return "\n".join(lines)
+
+
+def _go_no_go(combo: pd.Series, combo_dd: float, n_paper_days: int) -> tuple[bool, str]:
+    """Apply same acceptance criteria as the research loop to the paper combined portfolio."""
+    from autoalpha.evaluation.sharpe import probabilistic_sharpe
+    if len(combo) < 50:
+        return False, f"Only {len(combo)} paper return observations — need ≥50"
+    psr = float(probabilistic_sharpe(combo, benchmark_sr=0.62))
+    dd_pct = abs(combo_dd) * 100
+    active = int((combo != 0).sum())
+    passed = psr > 0.65 and dd_pct < 30.0 and active >= 50
+    verdict = ":white_check_mark: GO LIVE" if passed else ":x: NOT YET"
+    detail = (
+        f"PSR={psr:.3f} {'✓' if psr > 0.65 else '✗'} (need >0.65)  |  "
+        f"DD={dd_pct:.1f}% {'✓' if dd_pct < 30 else '✗'} (need <30%)  |  "
+        f"Active days={active} {'✓' if active >= 50 else '✗'} (need ≥50)"
+    )
+    return passed, f"{verdict}\n{detail}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rebuild-vault", action="store_true",
                         help="Rebuild vault_data.parquet before running")
     parser.add_argument("--slack-channel", default=None)
     parser.add_argument("--slack-thread-ts", default=None)
+    parser.add_argument("--report-level", default=None,
+                        choices=["daily", "weekly", "monthly", "quarterly"],
+                        help="Override auto-detected report level")
     args = parser.parse_args()
 
     if args.slack_channel:
         os.environ["SLACK_LOOP_CHANNEL"] = args.slack_channel
     if args.slack_thread_ts:
         os.environ["SLACK_LOOP_THREAD_TS"] = args.slack_thread_ts
+
+    today = pd.Timestamp.today().normalize()
+    level = args.report_level or _report_level(today)
 
     if args.rebuild_vault:
         log.info("Rebuilding vault_data.parquet...")
@@ -133,8 +190,6 @@ def main() -> None:
     if not VAULT_DATA.exists():
         log.error("vault_data.parquet not found — run scripts/build_vault_dataset.py first")
         sys.exit(1)
-
-    today = pd.Timestamp.today().normalize()
 
     # Determine paper start date before loading data (so we can filter the parquet)
     state: dict = {}
@@ -283,12 +338,33 @@ def main() -> None:
     PNL_FILE.write_text(json.dumps(output, indent=2))
     log.info("Saved %s", PNL_FILE)
 
-    # Slack summary
-    lines = [
-        f"*autoalpha paper trading update* — day {n_paper_days} ({paper_end_date})",
-        f"Combined: Sharpe={combo_sharpe:.2f}  Ret={combo_ret*100:.1f}%  DD={combo_dd*100:.1f}%",
-        f"Benchmark: Sharpe={bm_sharpe:.2f}  Ret={bm_ret*100:.1f}%",
-    ]
+    # Build Slack message based on report level
+    header = (
+        f"*autoalpha paper {level} report* — day {n_paper_days} "
+        f"({paper_start.date()} → {paper_end_date})"
+    )
+    summary = (
+        f"Combined: Sharpe={combo_sharpe:.2f}  Ret={combo_ret*100:+.1f}%  DD={combo_dd*100:.1f}%\n"
+        f"Benchmark: Sharpe={bm_sharpe:.2f}  Ret={bm_ret*100:+.1f}%  "
+        f"Alpha={combo_ret*100 - bm_ret*100:+.1f}%"
+    )
+
+    lines = [header, summary]
+
+    if level in ("weekly", "monthly", "quarterly") and signal_results:
+        lines.append(_fmt_signal_table(signal_results))
+
+    if level == "quarterly":
+        if signal_results:
+            all_rets_df = pd.DataFrame({s["name"]: pd.Series(s["daily_returns"]) for s in signal_results})
+            all_rets_df.index = pd.to_datetime(all_rets_df.index)
+            combo_series = all_rets_df.mean(axis=1).dropna()
+        else:
+            combo_series = pd.Series(dtype=float)
+        _, verdict = _go_no_go(combo_series, combo_dd, n_paper_days)
+        lines.append(f"\n*Go/No-Go for live trading:*\n{verdict}")
+
+    log.info("Posting %s report to Slack", level)
     _slack_post("\n".join(lines))
 
 
