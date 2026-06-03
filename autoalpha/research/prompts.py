@@ -75,6 +75,7 @@ The backtest universe contains ~2,550 US stocks (≥$300M market cap). Each back
 - Use only `bar_data` columns listed above; do not assume other columns exist
 - Handle missing data: guard with `.dropna()` or `.fillna()` before ranking
 - predict() body must be **80 lines of Python or fewer** (concise is better; do not pad with comments)
+- **NEVER index a Series with a ticker string to get a scalar weight.** `series[ticker]` returns a Series (not float) when the ticker appears multiple times. Always use vectorized weight construction: compute a weight Series then call `.to_dict()`, e.g. `scores = df["col"].rank(); sel = scores.nlargest(n).index; w = pd.Series(1/len(sel), index=sel); return w.to_dict()`. Never do `{t: series[t] / total for t in sel}`.
 """
 
 # ---------------------------------------------------------------------------
