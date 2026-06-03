@@ -110,8 +110,8 @@ class TestBuildInterpretationPrompt:
 
     def test_acceptance_thresholds_mentioned(self):
         _, user_p = build_interpretation_prompt(_HYP, {"sharpe": 1.3, "dsr": 0.97, "max_drawdown": 0.09})
-        assert "0.95" in user_p
-        assert "60" in user_p
+        assert "0.65" in user_p
+        assert "50" in user_p
 
     def test_system_contains_response_format(self):
         sys_p, _ = build_interpretation_prompt(_HYP, {})
