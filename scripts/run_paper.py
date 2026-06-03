@@ -193,12 +193,12 @@ def main() -> None:
     vault_provider = make_parquet_provider(vault_mi)
 
     # Benchmark: equal-weight all tickers, buy-and-hold over paper period
-    bm_bars = [bar_df for d, bar_df in vault_provider.bars(tickers, paper_start_date, paper_end_date)]
-    if bm_bars:
-        bm_rets = pd.concat([
-            df["Close"].rename(d)
-            for (d, df) in vault_provider.bars(tickers, paper_start_date, paper_end_date)
-        ], axis=1).T.pct_change().dropna().mean(axis=1)
+    bm_close = pd.concat([
+        df["Close"].rename(d)
+        for (d, df) in vault_provider.bars(tickers, paper_start_date, paper_end_date)
+    ], axis=1).T  # shape: dates × tickers
+    if len(bm_close) >= 2:
+        bm_rets = bm_close.pct_change().dropna(how="all").mean(axis=1)  # skipna=True by default
     else:
         bm_rets = pd.Series(dtype=float)
 
