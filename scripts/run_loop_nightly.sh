@@ -36,7 +36,7 @@ echo "--- Step 1: Update vault with latest bars ---"
 
 echo "--- Step 3: Paper trading update ---"
 "$PYTHON" scripts/run_paper.py \
-    --slack-channel "${SLACK_LOOP_CHANNEL:-}"
+    --slack-channel "${SLACK_LOOP_CHANNEL:-}" || echo "WARNING: paper trading failed (non-fatal)"
 
 echo "--- Step 4: Research loop (50 iterations) ---"
 "$PYTHON" scripts/run_loop.py \

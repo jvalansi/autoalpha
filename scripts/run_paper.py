@@ -220,6 +220,10 @@ def main() -> None:
         vault_mi.index.get_level_values("ticker"),
     ], names=["date", "ticker"])
     vault_mi = vault_mi.sort_index(level="date", sort_remaining=False)
+    if vault_mi.index.duplicated().any():
+        n_dupes = vault_mi.index.duplicated().sum()
+        log.warning("Dropping %d duplicate (date, ticker) rows from vault", n_dupes)
+        vault_mi = vault_mi[~vault_mi.index.duplicated(keep="last")]
 
     tickers = vault_mi.index.get_level_values("ticker").unique().tolist()
     vault_dates = vault_mi.index.get_level_values("date").unique().sort_values()
