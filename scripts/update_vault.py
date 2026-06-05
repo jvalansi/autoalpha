@@ -157,13 +157,17 @@ def main() -> None:
                     df = raw.xs(ticker, axis=1, level=1).dropna(how="all")
                     if not df.empty:
                         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-                        new_data[ticker] = df
+                        df = df[df.index > last_date]  # only strictly new dates
+                        if not df.empty:
+                            new_data[ticker] = df
                 except (KeyError, Exception):
                     pass
         else:
             ticker = batch[0]
             raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
-            new_data[ticker] = raw.dropna(how="all")
+            raw = raw[raw.index > last_date]
+            if not raw.empty:
+                new_data[ticker] = raw.dropna(how="all")
 
         log.info("  Fetched batch %d-%d (%d tickers with data)", i, i + len(batch), len(new_data))
 
