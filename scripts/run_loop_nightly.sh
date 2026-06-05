@@ -31,11 +31,8 @@ cd "$REPO_DIR"
 # Post to channel top-level (no thread) so each night's results are visible
 unset SLACK_LOOP_THREAD_TS
 
-echo "--- Step 1: Refresh OHLCV cache ---"
-"$PYTHON" scripts/refresh_cache_recent.py
-
-echo "--- Step 2: Rebuild vault dataset ---"
-"$PYTHON" scripts/build_vault_dataset.py
+echo "--- Step 1: Update vault with latest bars ---"
+"$PYTHON" scripts/update_vault.py
 
 echo "--- Step 3: Paper trading update ---"
 "$PYTHON" scripts/run_paper.py \
