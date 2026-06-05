@@ -240,10 +240,16 @@ def main() -> None:
     log.info("Paper period: %s → %s  (%d trading days, %d tickers)",
              paper_start_date, paper_end_date, n_paper_days, len(tickers))
 
-    # Load active signals
+    # Load active signals + any accepted in the last 12 hours
     memory = HypothesisMemory()
     rows = memory._conn.execute(
         "SELECT id, hypothesis_json FROM hypotheses WHERE status='active' ORDER BY id"
+    ).fetchall()
+    since = (today - pd.Timedelta(hours=12)).isoformat()
+    new_signal_rows = memory._conn.execute(
+        "SELECT id, hypothesis_json, sharpe, dsr, max_drawdown FROM hypotheses "
+        "WHERE status='active' AND created_at >= ? ORDER BY id",
+        (since,),
     ).fetchall()
     memory.close()
     log.info("Active signals: %d", len(rows))
@@ -354,6 +360,17 @@ def main() -> None:
     )
 
     lines = [header, summary]
+
+    if new_signal_rows:
+        new_lines = ["*New signals tonight:*"]
+        for r in new_signal_rows:
+            h = json.loads(r["hypothesis_json"])
+            name = h.get("concise_reason", f"signal_{r['id']}")
+            sharpe = r["sharpe"] or 0.0
+            dsr = r["dsr"] or 0.0
+            dd = abs(r["max_drawdown"] or 0.0) * 100
+            new_lines.append(f"  • {name}  Sharpe={sharpe:.2f}  DSR={dsr:.3f}  DD={dd:.1f}%")
+        lines.append("\n".join(new_lines))
 
     if level in ("weekly", "monthly", "quarterly") and signal_results:
         lines.append(_fmt_signal_table(signal_results))
