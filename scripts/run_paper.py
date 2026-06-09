@@ -371,6 +371,8 @@ def main() -> None:
             dd = abs(r["max_drawdown"] or 0.0) * 100
             new_lines.append(f"  • {name}  Sharpe={sharpe:.2f}  DSR={dsr:.3f}  DD={dd:.1f}%")
         lines.append("\n".join(new_lines))
+    else:
+        lines.append("*New signals tonight:* none")
 
     if level in ("weekly", "monthly", "quarterly") and signal_results:
         lines.append(_fmt_signal_table(signal_results))
