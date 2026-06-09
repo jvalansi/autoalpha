@@ -25,6 +25,8 @@ if [ -f "$ENV_FILE" ]; then
     done < <(grep -v '^\s*#' "$ENV_FILE" | grep -v '^\s*$')
 fi
 
+export PATH="/home/ubuntu/.local/bin:$PATH"
+
 cd "$REPO_DIR"
 
 # Post to channel top-level (no thread) so each night's results are visible
@@ -39,7 +41,7 @@ echo "--- Step 2: Research loop (50 iterations) ---"
     --budget 999 \
     --model claude-sonnet-4-6 \
     --data data/loop_data.parquet \
-    --slack-channel "${SLACK_LOOP_CHANNEL:-}"
+    --slack-channel "${SLACK_LOOP_CHANNEL:-}" || echo "WARNING: research loop failed (non-fatal)"
 
 echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
 "$PYTHON" scripts/run_paper.py \
