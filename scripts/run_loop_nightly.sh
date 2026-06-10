@@ -15,22 +15,18 @@ exec >> "$LOG" 2>&1
 
 echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 
-# Load env vars (SLACK_BOT_TOKEN, SLACK_LOOP_CHANNEL, etc.)
-# Use grep/export instead of source to avoid issues with special chars in values
+# Only pull the env vars this pipeline actually needs. The .env file is shared
+# with the slack-claude-bot and exports unrelated secrets (notably a stale
+# ANTHROPIC_API_KEY that the `claude` CLI would prefer over the subscription
+# auth, causing every loop iteration to abort with "Invalid API key").
 if [ -f "$ENV_FILE" ]; then
-    while IFS='=' read -r key value; do
-        # Skip blank lines and comments
-        [[ -z "$key" || "$key" == \#* ]] && continue
-        export "$key"="$value"
-    done < <(grep -v '^\s*#' "$ENV_FILE" | grep -v '^\s*$')
+    for var in SLACK_BOT_TOKEN SLACK_LOOP_CHANNEL; do
+        value=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+        [ -n "$value" ] && export "$var"="$value"
+    done
 fi
 
 export PATH="/home/ubuntu/.local/bin:$PATH"
-
-# The claude CLI prefers ANTHROPIC_API_KEY over the logged-in subscription, but
-# the key exported above is stale and causes the research loop to abort with
-# "Invalid API key" on every iteration. Drop it so the CLI uses the subscription.
-unset ANTHROPIC_API_KEY
 
 cd "$REPO_DIR"
 
