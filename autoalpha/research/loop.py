@@ -327,7 +327,10 @@ class ResearchLoop:
             timeout=300,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"claude CLI error: {result.stderr[:500]}")
+            raise RuntimeError(
+                f"claude CLI error: rc={result.returncode} "
+                f"stderr={result.stderr!r} stdout={result.stdout[:1000]!r}"
+            )
         text = result.stdout.strip()
         logger.debug("LLM raw response (first 500 chars): %s", text[:500])
         return text, 0.0

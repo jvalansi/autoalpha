@@ -27,6 +27,11 @@ fi
 
 export PATH="/home/ubuntu/.local/bin:$PATH"
 
+# The claude CLI prefers ANTHROPIC_API_KEY over the logged-in subscription, but
+# the key exported above is stale and causes the research loop to abort with
+# "Invalid API key" on every iteration. Drop it so the CLI uses the subscription.
+unset ANTHROPIC_API_KEY
+
 cd "$REPO_DIR"
 
 # Post to channel top-level (no thread) so each night's results are visible
