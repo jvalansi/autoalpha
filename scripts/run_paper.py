@@ -387,8 +387,10 @@ def main() -> None:
         _, verdict = _go_no_go(combo_series, combo_dd, n_paper_days)
         lines.append(f"\n*Go/No-Go for live trading:*\n{verdict}")
 
+    report_text = "\n".join(lines)
+    Path("data/last_paper_report.txt").write_text(report_text)
     log.info("Posting %s report to Slack", level)
-    _slack_post("\n".join(lines))
+    _slack_post(report_text)
 
 
 if __name__ == "__main__":
