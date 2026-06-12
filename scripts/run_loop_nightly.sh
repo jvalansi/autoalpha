@@ -2,8 +2,10 @@
 # Nightly autoalpha pipeline — run via cc-connect cron at 6 AM UTC (11 PM PDT)
 #   1. Update vault with latest bars
 #   2. Run 50 iterations of the LLM research loop (so new signals appear in tonight's report)
-#   3. Run paper trading; post PnL + new signals to the Discord session that owns
-#      this cron job (CC_PROJECT / CC_SESSION_KEY are injected by cc-connect cron).
+#   3. Run paper trading
+#   4. Post the daily report directly to the autoalpha Discord channel via the
+#      Bot REST API (no cc-connect session — that posts into a thread, and the
+#      auto-upgrade path in cron is also flaky).
 set -euo pipefail
 
 LOG="/tmp/autoalpha_nightly_$(date +%Y%m%d).log"
@@ -11,10 +13,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 PYTHON="/home/ubuntu/miniconda3/bin/python"
 REPORT_FILE="$REPO_DIR/data/last_paper_report.txt"
+ENV_FILE="/home/ubuntu/.env"
 
 exec >> "$LOG" 2>&1
 
 echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
+
+# Pull only the env vars this pipeline needs (the shared .env exports
+# unrelated secrets including a stale ANTHROPIC_API_KEY that breaks the
+# claude CLI subscription auth).
+if [ -f "$ENV_FILE" ]; then
+    for var in DISCORD_BOT_TOKEN; do
+        value=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+        [ -n "$value" ] && export "$var"="$value"
+    done
+fi
 
 export PATH="/home/ubuntu/.local/bin:$PATH"
 
@@ -35,7 +48,7 @@ echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
 
 echo "--- Step 4: Deliver daily report to Discord ---"
 if [ -f "$REPORT_FILE" ]; then
-    cc-connect send --stdin < "$REPORT_FILE" || echo "WARNING: cc-connect send failed"
+    "$PYTHON" scripts/post_to_discord.py < "$REPORT_FILE" || echo "WARNING: Discord post failed"
 else
     echo "WARNING: $REPORT_FILE missing — nothing to deliver"
 fi
