@@ -130,12 +130,56 @@ def test_sim_executor_cost_deducted():
 
 
 def test_sim_executor_overlay():
-    ex = SimExecutor(initial_capital=100_000, cost_bps=0, overlay=0.5)
+    ex = SimExecutor(initial_capital=100_000, cost_bps=0, overlay=0.5, max_weight=None)
     prices = {"AAPL": 100.0}
     ex.execute({"AAPL": 1.0}, date(2023, 1, 3), prices)
     # overlay=0.5 → target_frac=0.5, so 500 shares at $100
     expected_shares = 0.5 * 100_000 / 100.0
     assert abs(ex._positions.get("AAPL", 0) - expected_shares) < 1e-6
+
+
+def test_sim_executor_missing_price_uses_last_known_mark():
+    """Regression: a position whose ticker is absent from today's prices must
+    not be valued at $0 in NAV (previously caused -78% single-day blowups when
+    a held ticker dropped out of the universe).
+    """
+    ex = SimExecutor(initial_capital=100_000, cost_bps=0, max_weight=None)
+    # Day 1: take a 50% AAPL position at $100
+    ex.execute({"AAPL": 0.5}, date(2023, 1, 3), {"AAPL": 100.0})
+    nav_day1 = ex._compute_nav({"AAPL": 100.0})
+    assert abs(nav_day1 - 100_000) < 1e-6
+    # Day 2: AAPL gone from the universe (e.g. delisted feed), strategy still wants 50%.
+    # NAV must use the last-known mark, not 0, so it stays ~100k (not crater to ~50k).
+    ex.execute({"AAPL": 0.5}, date(2023, 1, 4), {})
+    nav_day2 = ex._compute_nav({})
+    assert abs(nav_day2 - 100_000) < 1e-6
+    rets = ex.returns()
+    assert abs(rets.iloc[-1]) < 1e-6  # no spurious return
+
+
+def test_sim_executor_closes_zombie_position_at_last_mark():
+    """When a held ticker has no quote today AND is no longer in targets,
+    the executor should close it at the last-known mark rather than leave a
+    zombie position in the book.
+    """
+    ex = SimExecutor(initial_capital=100_000, cost_bps=0, max_weight=None)
+    ex.execute({"AAPL": 0.5}, date(2023, 1, 3), {"AAPL": 100.0})
+    # Next bar: strategy drops AAPL from targets and AAPL has no price.
+    ex.execute({}, date(2023, 1, 4), {})
+    assert "AAPL" not in ex._positions  # closed (not zombied)
+
+
+def test_sim_executor_caps_per_name_weight():
+    """Sizing guardrail: an oversized weight must be clipped to max_weight."""
+    ex = SimExecutor(initial_capital=100_000, cost_bps=0, max_weight=0.10)
+    ex.execute({"AAPL": 0.78, "MSFT": 0.06}, date(2023, 1, 3),
+               {"AAPL": 100.0, "MSFT": 200.0})
+    # AAPL was supposed to be 78% but should be capped at 10%
+    aapl_value = ex._positions["AAPL"] * 100.0
+    assert abs(aapl_value - 10_000) < 1e-6
+    # MSFT below cap → unchanged
+    msft_value = ex._positions["MSFT"] * 200.0
+    assert abs(msft_value - 6_000) < 1e-6
 
 
 # ---------------------------------------------------------------------------

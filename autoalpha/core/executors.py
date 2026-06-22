@@ -50,34 +50,72 @@ class SimExecutor(Executor):
         initial_capital: float = 100_000.0,
         cost_bps: float = DEFAULT_TRANSACTION_COST_BPS,
         overlay: float = 1.0,
+        max_weight: float | None = 0.10,
     ):
         self._capital = initial_capital
         self._cost_bps = cost_bps
         self._overlay = overlay
+        self._max_weight = max_weight
         self._positions: dict[str, float] = {}  # ticker -> shares
         self._cash = initial_capital
         self._nav_history: dict[date, float] = {}
+        # Last known mark for each ticker, used to value positions on bars where
+        # the ticker is absent from `prices` (e.g. dropped from the universe).
+        # Without this, _compute_nav defaulted missing prices to 0 and produced
+        # spurious single-day NAV craters.
+        self._last_price: dict[str, float] = {}
 
     def reset(self) -> None:
         """Reset to initial state — call between CPCV folds."""
         self._positions = {}
         self._cash = self._capital
         self._nav_history = {}
+        self._last_price = {}
+
+    def _cap_weights(self, targets: dict[str, float]) -> dict[str, float]:
+        """Cap each positive weight at max_weight, drop non-positive weights.
+
+        Leftover gross (when caps bind) sits in cash rather than being
+        redistributed. This is a conservative guardrail: a signal that wanted
+        78% in one name ends up at the cap, with the rest uninvested, instead
+        of taking the concentrated bet.
+        """
+        cap = self._max_weight
+        if not targets:
+            return {}
+        if cap is None or cap >= 1.0:
+            return {t: v for t, v in targets.items() if v > 0}
+        return {t: min(v, cap) for t, v in targets.items() if v > 0}
 
     def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float]) -> None:
+        # Refresh last-known marks before we touch NAV, so today's prices win
+        # over any stale mark when valuing existing positions.
+        for ticker, price in prices.items():
+            if price and price > 0:
+                self._last_price[ticker] = price
+
+        targets = self._cap_weights(targets)
+
         nav = self._compute_nav(prices)
         self._nav_history[bar_date] = nav
 
-        # Close positions not in targets (strategy said "go to cash" for these)
+        # Close positions not in targets (strategy said "go to cash" for these).
+        # Fall back to last-known mark when the ticker has no quote today, so
+        # delisted/dropped names don't sit as zombie positions forever.
         for ticker in list(self._positions.keys()):
             if ticker not in targets:
-                price = prices.get(ticker)
+                price = prices.get(ticker) or self._last_price.get(ticker, 0.0)
                 if price and price > 0:
                     shares = self._positions.pop(ticker)
                     trade_value = abs(shares) * price
                     cost = trade_value * (self._cost_bps / 10_000)
-                    # Selling: receive proceeds, pay cost
                     self._cash += shares * price - cost
+                else:
+                    logger.warning(
+                        "Cannot close %s on %s — no current or last-known price; "
+                        "writing off position", ticker, bar_date,
+                    )
+                    self._positions.pop(ticker)
 
         for ticker, target_frac in targets.items():
             price = prices.get(ticker)
@@ -123,7 +161,7 @@ class SimExecutor(Executor):
 
     def _compute_nav(self, prices: dict[str, float]) -> float:
         equity = sum(
-            shares * prices.get(ticker, 0.0)
+            shares * (prices.get(ticker) or self._last_price.get(ticker, 0.0))
             for ticker, shares in self._positions.items()
         )
         return self._cash + equity
