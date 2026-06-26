@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -79,6 +80,17 @@ class _SlackNotifier:
 _DSR_THRESHOLD = 0.65  # PSR vs market benchmark 0.62: ~65% confident true SR exceeds market (≈ Sharpe > 0.9)
 _MAX_DRAWDOWN_THRESHOLD = 0.30  # 30% — diversified ~80-stock long-only universe
 _MIN_ACTIVE_DAYS = 50           # need at least 50 invested OOS days for meaningful stats
+_MIN_BASELINE_OVERLAP_DAYS = 30 # below this, regression is too noisy; defer to standalone gates
+
+
+def _min_alpha_t(n_active: int) -> float:
+    """Scale the marginal-α t-stat threshold by current book size.
+
+    LOO-mean ≈ overall-mean as N grows, so every candidate looks more redundant by
+    construction. Decay the bar linearly from 2.0 (sparse book, need clear winners)
+    to a 0.5 floor (sign filter on α).
+    """
+    return max(0.5, 2.0 - 0.01 * n_active)
 
 # ---------------------------------------------------------------------------
 # Loop
@@ -197,6 +209,17 @@ class ResearchLoop:
                                            additional_cost_usd=0.0, observation=observation,
                                            justification=justification)
 
+            # Marginal-alpha gate: candidate must add positive alpha vs current equal-weight book
+            if status == "accepted":
+                passes, alpha_note = self._baseline_alpha_passes(result)
+                if not passes:
+                    status = "rejected"
+                    justification = alpha_note
+                    self._memory.update_result(hyp_id, status="rejected", sharpe=result.sharpe,
+                                               dsr=result.dsr, max_drawdown=result.max_drawdown,
+                                               additional_cost_usd=0.0, observation=observation,
+                                               justification=justification)
+
             if status == "accepted":
                 self._accept(hyp, hyp_id, result)
             else:
@@ -274,6 +297,51 @@ class ResearchLoop:
 
         hyp_id = self._memory.store_hypothesis(hyp, trial_number, cost_usd=cost)
         return hyp, hyp_id, cost
+
+    def _baseline_alpha_passes(self, result: BacktestResult) -> tuple[bool, str]:
+        """OLS-regress candidate returns on the live equal-weight book and require α
+        with t ≥ _min_alpha_t(n_active).
+
+        Bootstraps an empty book and short overlaps — falls back to standalone metrics in both cases.
+        Returns (passes, one-line justification).
+        """
+        if not result.returns or not result.return_dates:
+            return True, "no candidate returns"
+
+        baseline = self._memory.get_portfolio_alpha()
+        if baseline is None or len(baseline) == 0:
+            return True, "no baseline (bootstrap)"
+
+        cand = pd.Series(result.returns, index=pd.to_datetime(result.return_dates))
+        df = pd.concat([cand.rename("c"), baseline.rename("b")], axis=1, sort=True).dropna()
+        n = len(df)
+        if n < _MIN_BASELINE_OVERLAP_DAYS:
+            return True, f"overlap {n}d < {_MIN_BASELINE_OVERLAP_DAYS}d (insufficient)"
+
+        y = df["c"].to_numpy()
+        x = df["b"].to_numpy()
+        x_mean = x.mean()
+        Sxx = float(((x - x_mean) ** 2).sum())
+        if Sxx == 0.0:
+            return True, "baseline has zero variance"
+
+        beta = float(((x - x_mean) * (y - y.mean())).sum() / Sxx)
+        alpha = float(y.mean() - beta * x_mean)
+        resid = y - (alpha + beta * x)
+        s2 = float((resid ** 2).sum() / (n - 2))
+        var_alpha = s2 * (1.0 / n + x_mean ** 2 / Sxx)
+        se_alpha = float(np.sqrt(var_alpha)) if var_alpha > 0 else float("inf")
+        t = alpha / se_alpha if se_alpha > 0 else 0.0
+
+        n_active = self._memory.get_active_count()
+        t_min = _min_alpha_t(n_active)
+        ann_alpha = alpha * 252
+        if t >= t_min:
+            return True, f"α={ann_alpha:.3f}/yr t={t:.2f} ≥ {t_min:.2f} (N={n_active})"
+        return False, (
+            f"α={ann_alpha:.3f}/yr t={t:.2f} < {t_min:.2f} (N={n_active}) — "
+            f"redundant with active book (overlap {n}d)"
+        )
 
     def _accept(self, hyp: Hypothesis, hyp_id: int, result: BacktestResult) -> None:
         if result.returns and result.return_dates:
