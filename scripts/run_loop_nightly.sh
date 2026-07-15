@@ -35,20 +35,45 @@ export PATH="/home/ubuntu/.local/bin:$PATH"
 
 cd "$REPO_DIR"
 
+# Each hang-prone step gets a `timeout` guard so a stalled network fetch or a
+# wedged claude CLI fails THAT step (non-fatally) instead of hanging the whole
+# job until the 180-min cron limit kills it as `exit -1` (as happened 2026-07-14).
+# `|| echo` only catches a non-zero exit, not a hang — the timeout is what caps a hang.
 echo "--- Step 1: Update vault with latest bars ---"
-"$PYTHON" scripts/update_vault.py
+timeout --kill-after=30 900 "$PYTHON" scripts/update_vault.py \
+    || echo "WARNING: vault update failed/timed out (non-fatal)"
 
 echo "--- Step 2: Research loop (50 iterations) ---"
-"$PYTHON" scripts/run_loop.py \
+timeout --kill-after=60 7200 "$PYTHON" scripts/run_loop.py \
     --iterations 50 \
     --budget 999 \
     --model claude-sonnet-4-6 \
-    --data data/loop_data.parquet || echo "WARNING: research loop failed (non-fatal)"
+    --data data/loop_data.parquet || echo "WARNING: research loop failed/timed out (non-fatal)"
 
 echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
-"$PYTHON" scripts/run_paper.py || echo "WARNING: paper trading failed (non-fatal)"
+timeout --kill-after=30 900 "$PYTHON" scripts/run_paper.py \
+    || echo "WARNING: paper trading failed/timed out (non-fatal)"
 
-echo "--- Step 4: Deliver daily report to Discord (disabled) ---"
-echo "SKIP: Discord post disabled per user request."
+echo "--- Step 4: Deliver daily report to Discord ---"
+# Skip the Discord post if paper_end didn't advance since the last delivery
+# (weekends, US market holidays, or vault-fetch failures all leave it unchanged).
+CURRENT_PAPER_END=""
+if [ -f "$PNL_FILE" ]; then
+    CURRENT_PAPER_END=$("$PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1])).get('paper_end',''))" "$PNL_FILE" 2>/dev/null || echo "")
+fi
+LAST_POSTED=""
+[ -f "$LAST_POSTED_FILE" ] && LAST_POSTED=$(cat "$LAST_POSTED_FILE")
+
+if [ ! -f "$REPORT_FILE" ]; then
+    echo "WARNING: $REPORT_FILE missing — nothing to deliver"
+elif [ -n "$CURRENT_PAPER_END" ] && [ "$CURRENT_PAPER_END" = "$LAST_POSTED" ]; then
+    echo "SKIP: paper_end ($CURRENT_PAPER_END) unchanged since last post — no new trading day."
+else
+    if "$PYTHON" scripts/post_to_discord.py < "$REPORT_FILE"; then
+        [ -n "$CURRENT_PAPER_END" ] && printf '%s' "$CURRENT_PAPER_END" > "$LAST_POSTED_FILE"
+    else
+        echo "WARNING: Discord post failed"
+    fi
+fi
 
 echo "=== done: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
