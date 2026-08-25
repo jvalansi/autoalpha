@@ -168,27 +168,118 @@ class SimExecutor(Executor):
 
 
 class LiveExecutor(Executor):
-    """Stub for live broker API. Subclass and implement _submit_order."""
+    """Broker-agnostic live executor.
 
-    def __init__(self, overlay: float = 1.0):
+    Holds the target-fraction → order reconciliation logic that is identical
+    across brokers; subclasses implement only the three broker calls:
+    `account_equity`, `current_positions`, and `_place_order`.
+
+    Fill model matches the backtest: orders are sized off the current account
+    equity and submitted as market-on-open, so they fill at the next open —
+    the same bar the SimExecutor fills on.
+    """
+
+    def __init__(
+        self,
+        overlay: float = 1.0,
+        allow_fractional: bool = False,
+        min_order_notional: float = 1.0,
+        dry_run: bool = False,
+    ):
         self._overlay = overlay
-        self._returns: list[tuple[date, float]] = []
+        self._allow_fractional = allow_fractional
+        self._min_order_notional = min_order_notional
+        self._dry_run = dry_run
+        self._nav_history: dict[date, float] = {}
+        self._orders: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # Broker interface — implement in subclasses
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def account_equity(self) -> float:
+        """Current account equity (cash + market value of positions)."""
+
+    @abstractmethod
+    def current_positions(self) -> dict[str, float]:
+        """Open positions as {ticker: signed share quantity}."""
+
+    @abstractmethod
+    def _place_order(self, symbol: str, qty: float, side: str) -> dict:
+        """Submit a single order. side is 'buy' or 'sell'. Returns broker response."""
+
+    # ------------------------------------------------------------------
+    # Reconciliation
+    # ------------------------------------------------------------------
+
+    def _target_shares(self, frac: float, equity: float, price: float) -> float:
+        shares = (frac * self._overlay * equity) / price
+        return shares if self._allow_fractional else float(int(shares))
 
     def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float]) -> None:
-        for ticker, frac in targets.items():
-            adjusted = frac * self._overlay
-            self._submit_order(ticker, adjusted, prices.get(ticker, 0.0), bar_date)
+        equity = self.account_equity()
+        self._nav_history[bar_date] = equity
+
+        current = self.current_positions()
+        symbols = set(targets) | set(current)
+
+        for symbol in sorted(symbols):
+            price = prices.get(symbol)
+            held = current.get(symbol, 0.0)
+            frac = targets.get(symbol, 0.0)
+
+            if frac <= 0:
+                # Not in targets (or explicitly flat) — close the position.
+                # Closing needs no price: qty is whatever we hold.
+                if held != 0:
+                    self._order(symbol, abs(held), "sell" if held > 0 else "buy", price)
+                continue
+
+            if price is None or price <= 0:
+                logger.warning("No price for %s on %s — skipping order", symbol, bar_date)
+                continue
+
+            delta = self._target_shares(frac, equity, price) - held
+            if abs(delta) * price < self._min_order_notional:
+                continue
+            if not self._allow_fractional and abs(delta) < 1:
+                continue
+            self._order(symbol, abs(delta), "buy" if delta > 0 else "sell", price)
+
+    def _order(self, symbol: str, qty: float, side: str, price: float | None) -> None:
+        if qty <= 0:
+            return
+        record = {"symbol": symbol, "qty": qty, "side": side, "price": price}
+        if self._dry_run:
+            logger.info("DRY RUN — would %s %s x%s", side, symbol, qty)
+            record["dry_run"] = True
+        else:
+            record["response"] = self._place_order(symbol, qty, side)
+        self._orders.append(record)
+
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
 
     def portfolio_value(self) -> float:
-        raise NotImplementedError("Implement via broker API")
+        return self.account_equity()
+
+    def orders(self) -> list[dict]:
+        """Orders submitted (or simulated, under dry_run) this session."""
+        return list(self._orders)
 
     def returns(self) -> pd.Series:
-        if not self._returns:
-            return pd.Series(dtype=float)
-        return pd.Series({d: r for d, r in self._returns}).sort_index()
+        if len(self._nav_history) < 2:
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+        nav = pd.Series(self._nav_history).sort_index()
+        nav.index = pd.to_datetime(nav.index)
+        return nav.pct_change().dropna()
+
+    def nav_series(self) -> pd.Series:
+        return pd.Series(self._nav_history).sort_index()
 
     def reset(self) -> None:
-        self._returns = []
-
-    def _submit_order(self, ticker: str, target_frac: float, price: float, bar_date: date) -> None:
-        raise NotImplementedError("Implement broker API call here")
+        """Clear local history only — does NOT liquidate broker positions."""
+        self._nav_history = {}
+        self._orders = []

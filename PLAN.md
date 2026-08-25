@@ -162,7 +162,7 @@ Goal: automated hypothesis generation and refinement, modelled on RD-Agent's tra
 **Known issues / open items:**
 - Model frequently outputs prose before JSON despite no-commentary instruction (parse_llm_json recovers, but wastes tokens and occasionally produces truncated JSON)
 - Model sometimes generates predict() bodies > 4000 chars; code_validator rejects them; model should be prompted to write concisely
-- `pandas_datareader` not installed → FF5 alpha unavailable; Sharpe/DSR computed on raw returns (acceptable for now)
+- ~~`pandas_datareader` not installed → FF5 alpha unavailable~~ **resolved**: installed; `evaluation/alpha.py` now disk-caches the factor file at `data/cache/ff5_daily.parquet` (the research loop spawns one subprocess per backtest — an in-process cache alone would re-download the zip every iteration). **Caveat:** French publishes the daily FF5 file with a ~2-month lag (as of 2026-08-25 it ends 2026-06-30), so recent paper windows fall below the 30-day overlap floor and fall back to benchmark-relative alpha. Backtests (all pre-2024-05-21) are fully covered.
 - 49-stock universe still skews large-cap tech; broader sector diversification would improve cross-sectional signal strength
 
 ## Phase 5 — Feature Enrichment & Signal Library Growth
@@ -180,10 +180,12 @@ Goal: fill in the NaN feature columns and run enough iterations to build a libra
 - [x] **Marginal-alpha gate at admission** (`loop.py:_baseline_alpha_passes`): regress candidate returns on the live equal-weight book; require α with t ≥ `_min_alpha_t(n_active)` on ≥ `_MIN_BASELINE_OVERLAP_DAYS` (30) of overlap. Threshold scales with book size: `max(0.5, 2.0 − 0.01·N)` — strict on a sparse book (t≥2 at N=0), relaxes as crowdedness mechanically tightens the LOO bar, floors at 0.5 (sign filter on α). Bootstraps an empty book and short overlaps. Leave-one-out diagnostic on the current 104-signal book: 12/104 pass at the scaled t≥1.0 threshold (was 5/104 at the fixed t≥1.5), confirming the existing book is heavily over-redundant. `scripts/diagnose_baseline_alpha.py` runs the diagnostic read-only.
 
 **Priority 3 — Paper trading:**
-- [ ] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; **Kelly fraction = 0.25** (quarter-Kelly; reduces median drawdown ~75% vs full Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap: no single position > 5% of portfolio; meta_confidence multiplied in Phase 6 after meta-model is trained; closes #29
+- [x] `autoalpha/execution/sizer.py` — fractional Kelly bet sizing; **Kelly fraction = 0.25** (quarter-Kelly; reduces median drawdown ~75% vs full Kelly); final position = `0.25 × kelly_bet × darwinian_weight`; hard cap: no single position > 5% of portfolio; meta_confidence multiplied in Phase 6 after meta-model is trained; closes #29; **implemented**: `kelly_bet` = continuous Kelly `mu/sigma²` estimated on the signal's trailing 63-day alpha returns, clipped to [0, 2.0] and neutral (1.0) below 20 observations — the estimator is unstable on short samples; `PositionSizer.combine()` sums overlapping names across signals, re-applies the 5% per-name cap, then scales the book to `MAX_GROSS=1.0`; `meta_confidence < 0.5` skips the trade (wired now, returns 1.0 until Phase 6)
 - [ ] Paper trading mode: `Runner(strategy, Live, Sim)` — LiveProvider streams from yfinance; run nightly after market close; compare paper P&L to vault benchmark daily
 - [ ] Implement `LiveProvider.bars()` streaming from yfinance for paper mode
 - [ ] Run paper for ≥ 30 calendar days before advancing; gate: paper Sharpe > 0 over the period
+  - **Gate tightened 2026-08-25**: Sharpe alone can be satisfied by a book that is just long the market, so `_go_no_go` in `run_paper.py` now also requires benchmark-relative alpha `t ≥ 2.0` alongside PSR > 0.65, DD < 30%, and ≥ 50 active days
+  - **Status at day 61 (2026-05-28 → 2026-08-24)**: combined Sharpe 3.46, return +9.5%, DD −1.8%; alpha vs equal-weight book **+36.7%/yr, t=1.52, beta=0.07, IR=3.22** — the book is close to market-neutral (so the naive +0.5% return-difference badly understates it), but the alpha is **not yet statistically significant**. At the current IR, t=2.0 arrives around paper day ~97 (≈38 more trading days)
 
 ## Phase 6 — Meta-Labeling & Live Deployment
 Goal: improve signal precision via a secondary filter, then graduate to live trading.
@@ -193,6 +195,9 @@ Meta-labeling is placed here deliberately — after paper trading — because: (
 - [ ] `autoalpha/labeling/meta_model.py` — per-strategy binary classifier ("given signal fired, will it work?"); trained on each CPCV fold's in-sample data only (no look-ahead); features: signal strength z-score, VIX regime, rolling 63d Sharpe, sector, market cap tier; model: LightGBM or logistic regression (not deep learning — too few samples); output: probability p ∈ [0,1]
 - [ ] Wire meta-confidence into sizer: final position = `0.25 × kelly_bet × darwinian_weight × meta_confidence`; if `meta_confidence < 0.5`, skip trade entirely
 - [ ] Live trading: `Runner(strategy, Live, Live)` — implement `LiveExecutor` with Alpaca API; order type: market-on-open (MOO) to match backtest fill model
+  - [x] `LiveExecutor` rewritten as a broker-agnostic base holding the target-fraction → order reconciliation (sizes off live account equity, closes names absent from targets even when they have no quote, skips sub-one-share deltas, honours the overlay, `dry_run` mode); subclasses implement only `account_equity` / `current_positions` / `_place_order`
+  - [x] `autoalpha/execution/alpaca.py` — `AlpacaExecutor`: MOO orders (`type=market`, `time_in_force=opg`, whole shares — Alpaca rejects fractional `opg`), retry-with-backoff on 5xx/timeouts, immediate raise on 4xx (a rejection does not become truer on retry), cancels open orders before each reconcile so stale `opg` orders can't double a position, defaults to the **paper** endpoint and warns loudly when pointed at real money
+  - [ ] Smoke-test `AlpacaExecutor` against a funded Alpaca paper account — needs `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` in `/home/ubuntu/.env` (not present as of 2026-08-25); the executor has never touched a real broker account
 - [ ] Promotion pipeline: backtest passes → paper ≥ 30 days (Sharpe > 0) → meta-model trained → live (gated on continued paper Sharpe)
 - [ ] Graceful degradation: if live broker API fails, fall back to `SimExecutor` and alert via Slack
 
@@ -200,7 +205,9 @@ Meta-labeling is placed here deliberately — after paper trading — because: (
 Goal: scheduled runs, monitoring, alerting.
 
 - [ ] Scheduled nightly research loop (new hypotheses + re-evaluate existing library); run via cron or systemd timer after market close
-- [ ] Darwinian weight update job: runs daily after close, updates signal weights based on 63-day rolling alpha Sharpe; decays / kills underperforming signals
+- [x] Darwinian weight update job: runs daily after close, updates signal weights based on 63-day rolling alpha Sharpe; decays / kills underperforming signals — `scripts/update_weights.py`, wired into `run_loop_nightly.sh` as step 3b (after paper trading, which produces the per-signal daily returns it consumes). Residualizes against FF5 when coverage ≥ 30 days, else against the equal-weight benchmark. `SignalLibrary.sync_active()` reconciles membership with the hypothesis book (first run retired 32 stale entries left over from pruning); the `days_at_floor` counter is now idempotent per `as_of` date so a nightly retry can't age a signal toward death twice
+  - **Fixed while wiring this up**: `compute_benchmark_alpha` returned raw OLS residuals, which are mean-zero by construction — every signal scored a rolling Sharpe of ~0 and pinned to the 0.3 floor. The series now adds the intercept back, matching the FF5 convention, so its mean is the alpha and its Sharpe is the IR
+  - **Calibration note**: with `_TARGET_SHARPE = 0.5`, any signal above rolling Sharpe 1.25 pins to the 2.5 ceiling. All 4 active signals are currently at the ceiling, so the weighting is not yet discriminating between them and the Darwinian-weighted book is identical to the equal-weight book. Raising the target (or ranking cross-sectionally) would restore separation
 - [ ] Slack notifications for: new validated signals, decaying signals, signal death, regime shifts, live trade executions, daily P&L vs benchmark
 - [ ] Dashboard: signal library Darwinian weights over time, regime tracker, paper/live P&L vs vault benchmark
 - [ ] Vault unlock (2026-05-21): final evaluation of all strategies against the 2-year holdout; update `vault_holdout.json` lock date and run `evaluate_vault.py`

@@ -117,6 +117,45 @@ class SignalLibrary:
         return df.set_index("date")
 
     # ------------------------------------------------------------------
+    # Status management
+    # ------------------------------------------------------------------
+
+    def set_status(self, name: str, status: str) -> None:
+        """Force a signal's status ('active' / 'decayed' / 'dead')."""
+        self._conn.execute(
+            "UPDATE signal_library SET status = ?, updated_at = date('now') WHERE name = ?",
+            (status, name),
+        )
+        self._conn.commit()
+
+    def sync_active(self, active_names: list[str]) -> dict[str, list[str]]:
+        """Reconcile the library against the hypothesis book's active set.
+
+        Signals the book still trades are registered (weight 1.0 if new);
+        signals it no longer trades — pruned, retired, errored — are marked
+        dead so they stop drawing weight and stop appearing in reports.
+
+        Returns {'added': [...], 'retired': [...]}.
+        """
+        active = set(active_names)
+        known = {
+            r[0]: r[1]
+            for r in self._conn.execute("SELECT name, status FROM signal_library").fetchall()
+        }
+
+        added = sorted(active - set(known))
+        for name in added:
+            self.add_signal(name)
+
+        retired = sorted(n for n, st in known.items() if n not in active and st != "dead")
+        for name in retired:
+            self.set_status(name, "dead")
+
+        if added or retired:
+            logger.info("Library sync: +%d added, %d retired", len(added), len(retired))
+        return {"added": added, "retired": retired}
+
+    # ------------------------------------------------------------------
     # Weight updates
     # ------------------------------------------------------------------
 
@@ -157,8 +196,17 @@ class SignalLibrary:
             else:
                 _, days_at_floor, prev_status = row
 
+            # Only advance the floor counter once per calendar date. The nightly
+            # job can be re-run (retry, manual invocation) and must not age a
+            # signal toward death several times for the same day.
+            already_counted = self._conn.execute(
+                "SELECT 1 FROM weight_history WHERE signal_name = ? AND as_of_date = ?",
+                (name, as_of.isoformat()),
+            ).fetchone() is not None
+
             if new_weight <= _WEIGHT_FLOOR + 1e-6:
-                days_at_floor += 1
+                if not already_counted:
+                    days_at_floor += 1
             else:
                 days_at_floor = 0
 

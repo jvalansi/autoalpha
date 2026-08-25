@@ -3,6 +3,7 @@
 #   1. Update vault with latest bars
 #   2. Run 50 iterations of the LLM research loop (so new signals appear in tonight's report)
 #   3. Run paper trading
+#   3b. Update Darwinian signal weights from the paper book's alpha returns
 #   4. Post the daily report directly to the autoalpha Discord channel via the
 #      Bot REST API (no cc-connect session — that posts into a thread, and the
 #      auto-upgrade path in cron is also flaky).
@@ -53,6 +54,12 @@ timeout --kill-after=60 7200 "$PYTHON" scripts/run_loop.py \
 echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
 timeout --kill-after=30 900 "$PYTHON" scripts/run_paper.py \
     || echo "WARNING: paper trading failed/timed out (non-fatal)"
+
+echo "--- Step 3b: Darwinian weight update ---"
+# Must run after paper trading: it reads data/paper_pnl.json for the per-signal
+# daily returns it residualizes into rolling alpha Sharpe.
+timeout --kill-after=30 300 "$PYTHON" scripts/update_weights.py \
+    || echo "WARNING: weight update failed/timed out (non-fatal)"
 
 echo "--- Step 4: Deliver daily report to Discord ---"
 # Skip the Discord post if paper_end didn't advance since the last delivery

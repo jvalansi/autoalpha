@@ -32,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autoalpha.core.executors import SimExecutor
 from autoalpha.core.providers import HistoricalProvider
 from autoalpha.core.runner import Runner
+from autoalpha.evaluation.alpha import compute_benchmark_alpha, ff5_alpha_stats
+from autoalpha.evaluation.library import SignalLibrary
 from autoalpha.research.code_validator import wrap_predict_body
 from autoalpha.research.memory import HypothesisMemory
 
@@ -139,27 +141,44 @@ def _fmt_signal_table(signal_results: list[dict]) -> str:
     lines = ["*Per-signal attribution:*"]
     for s in signal_results:
         alpha = s["total_return"] - 0.0  # will be relative to benchmark below
+        alpha_txt = (f"  α={s['alpha_annualized']:+.1f}%/yr t={s['alpha_t']:.2f}"
+                     if s.get("alpha_t") is not None else "")
         lines.append(
             f"  • {s['name']}: Ret={s['total_return']:+.1f}%  "
-            f"Sharpe={s['sharpe']:.2f}  DD={s['max_drawdown']:.1f}%  n={s['n_bars']}"
+            f"Sharpe={s['sharpe']:.2f}  DD={s['max_drawdown']:.1f}%  n={s['n_bars']}{alpha_txt}"
         )
     return "\n".join(lines)
 
 
-def _go_no_go(combo: pd.Series, combo_dd: float, n_paper_days: int) -> tuple[bool, str]:
-    """Apply same acceptance criteria as the research loop to the paper combined portfolio."""
+_MIN_ALPHA_T = 2.0  # benchmark-relative alpha must be statistically distinguishable from 0
+
+
+def _go_no_go(combo: pd.Series, combo_dd: float, n_paper_days: int,
+              alpha_stats: dict | None = None) -> tuple[bool, str]:
+    """Apply the live-deployment gate to the paper combined portfolio.
+
+    Sharpe and drawdown alone can be satisfied by a book that is just long the
+    market. The alpha t-stat is the term that asks whether the book beat the
+    universe it could have held instead.
+    """
     from autoalpha.evaluation.sharpe import probabilistic_sharpe
     if len(combo) < 50:
         return False, f"Only {len(combo)} paper return observations — need ≥50"
     psr = float(probabilistic_sharpe(combo, benchmark_sr=0.62))
     dd_pct = abs(combo_dd) * 100
     active = int((combo != 0).sum())
-    passed = psr > 0.65 and dd_pct < 30.0 and active >= 50
+
+    alpha_stats = alpha_stats or {}
+    alpha_t = float(alpha_stats.get("alpha_t", 0.0)) if alpha_stats.get("available") else 0.0
+    alpha_ok = alpha_t >= _MIN_ALPHA_T
+
+    passed = psr > 0.65 and dd_pct < 30.0 and active >= 50 and alpha_ok
     verdict = ":white_check_mark: GO LIVE" if passed else ":x: NOT YET"
     detail = (
         f"PSR={psr:.3f} {'✓' if psr > 0.65 else '✗'} (need >0.65)  |  "
         f"DD={dd_pct:.1f}% {'✓' if dd_pct < 30 else '✗'} (need <30%)  |  "
-        f"Active days={active} {'✓' if active >= 50 else '✗'} (need ≥50)"
+        f"Active days={active} {'✓' if active >= 50 else '✗'} (need ≥50)  |  "
+        f"Alpha t={alpha_t:.2f} {'✓' if alpha_ok else '✗'} (need ≥{_MIN_ALPHA_T})"
     )
     return passed, f"{verdict}\n{detail}"
 
@@ -306,16 +325,24 @@ def main() -> None:
         log.info("  %s: Sharpe=%.2f  TotalRet=%.1f%%  DD=%.1f%%  n=%d",
                  name, ann_sharpe, total_ret * 100, drawdown * 100, len(rets))
 
+        sig_alpha = compute_benchmark_alpha(rets, bm_rets) if len(bm_rets) > 1 else {"available": False}
+
         signal_results.append({
             "name": name,
             "sharpe": round(ann_sharpe, 3),
             "total_return": round(total_ret * 100, 2),
             "max_drawdown": round(drawdown * 100, 2),
             "n_bars": len(rets),
+            "alpha_annualized": round(sig_alpha["alpha_annualized"] * 100, 2) if sig_alpha.get("available") else None,
+            "alpha_t": round(sig_alpha["alpha_t"], 2) if sig_alpha.get("available") else None,
+            "beta": round(sig_alpha["beta"], 2) if sig_alpha.get("available") else None,
             "daily_returns": {str(d.date()): round(r, 6) for d, r in rets.items()},
         })
 
-    # Combined portfolio: equal-weight signals
+    # Combined portfolio: equal-weight signals, plus a Darwinian-weighted variant
+    combo = pd.Series(dtype=float)
+    wcombo = pd.Series(dtype=float)
+    darwin_weights: dict[str, float] = {}
     if signal_results:
         all_rets = pd.DataFrame({s["name"]: pd.Series(s["daily_returns"]) for s in signal_results})
         all_rets.index = pd.to_datetime(all_rets.index)
@@ -323,11 +350,36 @@ def main() -> None:
         combo_sharpe = (combo.mean() / combo.std() * (252 ** 0.5)) if combo.std() > 0 else 0.0
         combo_ret = (1 + combo).prod() - 1
         combo_dd = ((1 + combo).cumprod() / (1 + combo).cumprod().cummax() - 1).min()
+
+        # Darwinian-weighted book. Weights are maintained nightly by
+        # scripts/update_weights.py; missing names default to 1.0.
+        with SignalLibrary() as _lib:
+            stored = _lib.all_weights()
+        darwin_weights = {s["name"]: float(stored.get(s["name"], 1.0)) for s in signal_results}
+        w = pd.Series(darwin_weights)
+        if w.sum() > 0:
+            wcombo = (all_rets[w.index] * w).sum(axis=1).div(w.sum()).dropna()
+            wcombo_sharpe = (wcombo.mean() / wcombo.std() * (252 ** 0.5)) if wcombo.std() > 0 else 0.0
+            wcombo_ret = (1 + wcombo).prod() - 1
+            wcombo_dd = ((1 + wcombo).cumprod() / (1 + wcombo).cumprod().cummax() - 1).min()
+        else:
+            wcombo_sharpe = wcombo_ret = wcombo_dd = 0.0
     else:
         combo_sharpe = combo_ret = combo_dd = 0.0
+        wcombo_sharpe = wcombo_ret = wcombo_dd = 0.0
 
     bm_sharpe = (bm_rets.mean() / bm_rets.std() * (252 ** 0.5)) if len(bm_rets) > 1 and bm_rets.std() > 0 else 0.0
     bm_ret = (1 + bm_rets).prod() - 1
+
+    # Alpha of the combined book. Benchmark alpha covers the whole window;
+    # FF5 lags ~2 months so it is reported separately with its coverage.
+    bench_alpha = compute_benchmark_alpha(combo, bm_rets) if len(combo) > 1 and len(bm_rets) > 1 \
+        else {"available": False, "reason": "insufficient overlap"}
+    ff5 = ff5_alpha_stats(combo) if len(combo) > 1 else {"available": False}
+
+    def _alpha_payload(d: dict) -> dict:
+        return {k: (round(v, 4) if isinstance(v, float) else v)
+                for k, v in d.items() if k != "residuals"}
 
     output = {
         "paper_start": state["paper_start"],
@@ -336,12 +388,21 @@ def main() -> None:
         "benchmark": {
             "sharpe": round(bm_sharpe, 3),
             "total_return": round(bm_ret * 100, 2),
+            "daily_returns": {str(d.date()): round(r, 6) for d, r in bm_rets.items()},
         },
         "combined": {
             "sharpe": round(combo_sharpe, 3),
             "total_return": round(combo_ret * 100, 2),
             "max_drawdown": round(combo_dd * 100, 2),
         },
+        "combined_darwinian": {
+            "sharpe": round(wcombo_sharpe, 3),
+            "total_return": round(wcombo_ret * 100, 2),
+            "max_drawdown": round(wcombo_dd * 100, 2),
+            "weights": {k: round(v, 3) for k, v in darwin_weights.items()},
+        },
+        "alpha_vs_benchmark": _alpha_payload(bench_alpha),
+        "alpha_ff5": _alpha_payload(ff5),
         "signals": signal_results,
     }
 
@@ -355,11 +416,39 @@ def main() -> None:
     )
     summary = (
         f"Combined: Sharpe={combo_sharpe:.2f}  Ret={combo_ret*100:+.1f}%  DD={combo_dd*100:.1f}%\n"
+        f"Darwinian-weighted: Sharpe={wcombo_sharpe:.2f}  Ret={wcombo_ret*100:+.1f}%  "
+        f"DD={wcombo_dd*100:.1f}%\n"
         f"Benchmark: Sharpe={bm_sharpe:.2f}  Ret={bm_ret*100:+.1f}%  "
         f"Alpha={combo_ret*100 - bm_ret*100:+.1f}%"
     )
 
-    lines = [header, summary]
+    if bench_alpha.get("available"):
+        alpha_line = (
+            f"Alpha vs equal-weight book: {bench_alpha['alpha_annualized']*100:+.1f}%/yr  "
+            f"t={bench_alpha['alpha_t']:.2f}  beta={bench_alpha['beta']:.2f}  "
+            f"IR={bench_alpha['information_ratio']:.2f}  (n={bench_alpha['n_overlap']})"
+        )
+        # At a stable IR, the alpha t-stat grows as IR × sqrt(years). Report how
+        # much more paper history the current edge needs to clear the gate.
+        ir = bench_alpha["information_ratio"]
+        if 0 < bench_alpha["alpha_t"] < _MIN_ALPHA_T and ir > 0:
+            days_needed = int((_MIN_ALPHA_T / ir) ** 2 * 252)
+            alpha_line += (
+                f"\n  → t={_MIN_ALPHA_T} needs ~{days_needed} paper days at this IR "
+                f"({max(days_needed - bench_alpha['n_overlap'], 0)} more)"
+            )
+    else:
+        alpha_line = f"Alpha vs equal-weight book: unavailable — {bench_alpha.get('reason', '?')}"
+
+    if ff5.get("available"):
+        alpha_line += (
+            f"\nFF5 alpha: {ff5['alpha_annualized']*100:+.1f}%/yr  t={ff5['alpha_t']:.2f}  "
+            f"(n={ff5['n_overlap']}/{ff5['n_total']} days covered)"
+        )
+    else:
+        alpha_line += f"\nFF5 alpha: n/a — {ff5.get('reason', 'unavailable')}"
+
+    lines = [header, summary, alpha_line]
 
     if new_signal_rows:
         new_lines = ["*New signals tonight:*"]
@@ -384,7 +473,7 @@ def main() -> None:
             combo_series = all_rets_df.mean(axis=1).dropna()
         else:
             combo_series = pd.Series(dtype=float)
-        _, verdict = _go_no_go(combo_series, combo_dd, n_paper_days)
+        _, verdict = _go_no_go(combo_series, combo_dd, n_paper_days, bench_alpha)
         lines.append(f"\n*Go/No-Go for live trading:*\n{verdict}")
 
     report_text = "\n".join(lines)
