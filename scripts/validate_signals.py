@@ -13,6 +13,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pandas as pd
+
+from autoalpha.evaluation.sharpe import deflated_sharpe, expected_max_sr
 from autoalpha.research.code_validator import wrap_predict_body
 from autoalpha.research.memory import HypothesisMemory
 from autoalpha.research.subprocess_runner import run_strategy_subprocess
@@ -33,8 +36,9 @@ def main() -> None:
     print(f"Validating {len(rows)} active signals on {DATA_PATH}")
     print(f"n_trials (for DSR): {n_trials}")
     print()
-    print(f"{'ID':>4}  {'Name':<52}  {'Old Sh':>7}  {'New Sh':>7}  {'Old DSR':>7}  {'New DSR':>7}  {'Old DD':>7}  {'New DD':>7}  Status")
-    print("-" * 130)
+    print(f"{'ID':>4}  {'Name':<44}  {'Old Sh':>7}  {'New Sh':>7}  {'Old PSR':>7}  {'New PSR':>7}  "
+          f"{'TrueDSR':>7}  {'Old DD':>7}  {'New DD':>7}  Status")
+    print("-" * 140)
 
     results = []
     for row_id, old_sharpe, old_dsr, old_dd, hyp_json in rows:
@@ -47,10 +51,22 @@ def main() -> None:
         if not result.succeeded:
             status = f"ERROR: {result.error[:40]}"
             new_sharpe = new_dsr = new_dd = 0.0
+            true_dsr = 0.0
+            n_bars = 0
         else:
             new_sharpe = result.sharpe
             new_dsr = result.dsr
             new_dd = result.max_drawdown
+            # The field named `dsr` — and the loop's admission gate — is really a
+            # PSR against a fixed market benchmark (SR*=0.62). It carries no
+            # multiple-testing penalty. Recompute the actual Deflated Sharpe
+            # against every trial ever run.
+            n_bars = len(result.returns)
+            if result.returns:
+                rets = pd.Series(result.returns, index=pd.to_datetime(result.return_dates))
+                true_dsr = float(deflated_sharpe(rets, n_trials=n_trials))
+            else:
+                true_dsr = 0.0
             degradation = (old_sharpe - new_sharpe) / max(abs(old_sharpe), 0.01)
             if new_dsr < 0.95:
                 status = "FAIL (DSR)"
@@ -59,20 +75,26 @@ def main() -> None:
             else:
                 status = "OK"
 
-        print(f"{row_id:>4}  {name:<52}  {old_sharpe:>7.2f}  {new_sharpe:>7.2f}  "
-              f"{old_dsr:>7.3f}  {new_dsr:>7.3f}  {old_dd*100:>6.1f}%  {new_dd*100:>6.1f}%  {status}")
+        print(f"{row_id:>4}  {name[:44]:<44}  {old_sharpe:>7.2f}  {new_sharpe:>7.2f}  "
+              f"{old_dsr:>7.3f}  {new_dsr:>7.3f}  {true_dsr:>7.3f}  "
+              f"{old_dd*100:>6.1f}%  {new_dd*100:>6.1f}%  {status}")
 
         results.append({
             "id": row_id,
             "name": name,
             "old_sharpe": old_sharpe, "new_sharpe": new_sharpe,
-            "old_dsr": old_dsr, "new_dsr": new_dsr,
+            "old_dsr": old_dsr, "new_dsr": new_dsr, "true_dsr": true_dsr,
+            "n_bars": n_bars,
             "old_dd": old_dd, "new_dd": new_dd,
             "status": status,
         })
 
     OUT_PATH.write_text(json.dumps(results, indent=2))
     print(f"\nSaved {OUT_PATH}")
+
+    emax = expected_max_sr(n_trials)
+    print(f"\nDeflation context: {n_trials} cumulative trials → E[max SR] = {emax:.2f} × SE(SR).")
+    print("New PSR is the loop's actual admission gate (no trial penalty); TrueDSR applies it.")
 
     pass_count = sum(1 for r in results if r["status"] == "OK")
     fail_count = len(results) - pass_count
