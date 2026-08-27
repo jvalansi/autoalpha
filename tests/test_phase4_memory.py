@@ -216,3 +216,82 @@ class TestContextManager:
         # Connection should be closed; re-opening should work fine
         with HypothesisMemory(db_path=db) as mem2:
             assert mem2.current_trial_count() == 0
+
+
+class TestTrialReturnStorage:
+    """Return series must be kept for every trial, not just the winners.
+
+    Effective-N clustering — the only defensible way to shrink the Deflated
+    Sharpe penalty — is impossible retroactively if rejects were discarded.
+    """
+
+    def _memory(self, tmpdir):
+        from autoalpha.research.memory import HypothesisMemory
+        return HypothesisMemory(db_path=Path(tmpdir) / "t.db")
+
+    def _store(self, m, name="test signal"):
+        from autoalpha.research.hypothesis import Hypothesis
+        h = Hypothesis(
+            hypothesis="Cheap high-quality firms with rising estimates outperform",
+            reason="Analysts update estimates slowly after fundamental improvement",
+            knowledge="Investors underreact to gradual fundamental improvement because the "
+                      "information arrives with no salient event to trigger repricing, so the "
+                      "adjustment appears over subsequent months rather than immediately",
+            cohort="value",
+            concise_reason=name,
+            predict_body="return {}",
+        )
+        return m.store_hypothesis(h, trial_number=1, cost_usd=0.0)
+
+    def test_round_trip_preserves_series(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m = self._memory(tmpdir)
+            hid = self._store(m)
+            dates = pd.date_range("2020-01-01", periods=300, freq="B").strftime("%Y-%m-%d").tolist()
+            rets = list(np.random.default_rng(0).normal(0.0004, 0.01, 300))
+            m.store_trial_returns(hid, dates, rets)
+            got = m.get_trial_returns(hid)
+            assert len(got) == 300
+            assert got.iloc[0] == pytest.approx(rets[0])
+            assert got.index[0] == pd.Timestamp("2020-01-01")
+            m.close()
+
+    def test_empty_series_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m = self._memory(tmpdir)
+            hid = self._store(m)
+            m.store_trial_returns(hid, [], [])
+            assert m.get_trial_returns(hid) is None
+            m.close()
+
+    def test_missing_trial_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m = self._memory(tmpdir)
+            assert m.get_trial_returns(999) is None
+            m.close()
+
+    def test_rejected_trials_are_retrievable_for_clustering(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m = self._memory(tmpdir)
+            keep, drop = self._store(m, "kept"), self._store(m, "dropped")
+            dates = pd.date_range("2020-01-01", periods=40, freq="B").strftime("%Y-%m-%d").tolist()
+            m.store_trial_returns(keep, dates, [0.001] * 40)
+            m.store_trial_returns(drop, dates, [-0.001] * 40)
+            m.update_status(drop, "rejected")
+
+            everything = m.all_trial_returns()
+            assert set(everything) == {keep, drop}
+            assert set(m.all_trial_returns(statuses=["rejected"])) == {drop}
+            m.close()
+
+    def test_storing_twice_replaces_not_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m = self._memory(tmpdir)
+            hid = self._store(m)
+            dates = pd.date_range("2020-01-01", periods=10, freq="B").strftime("%Y-%m-%d").tolist()
+            m.store_trial_returns(hid, dates, [0.001] * 10)
+            m.store_trial_returns(hid, dates, [0.002] * 10)
+            assert m.get_trial_returns(hid).iloc[0] == pytest.approx(0.002)
+            assert m._conn.execute("SELECT COUNT(*) FROM trial_returns").fetchone()[0] == 1
+            m.close()

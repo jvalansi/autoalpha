@@ -178,6 +178,11 @@ class ResearchLoop:
                 )
                 continue
 
+            # Persist the return series for every trial — accepted or not.
+            # Effective-N clustering (see memory.store_trial_returns) can only
+            # be done later if the rejects were kept too.
+            self._memory.store_trial_returns(hyp_id, result.return_dates, result.returns)
+
             # Interpret result
             interp, interp_cost = self._interpret(hyp, result)
             total_cost += interp_cost

@@ -6,7 +6,9 @@ never reset — it feeds into deflated_sharpe() as the n_trials argument.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+import zlib
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +39,14 @@ CREATE TABLE IF NOT EXISTS portfolio_alpha (
     as_of_date      TEXT    NOT NULL,
     alpha_return    REAL    NOT NULL,
     UNIQUE(hypothesis_id, as_of_date)
+);
+
+CREATE TABLE IF NOT EXISTS trial_returns (
+    hypothesis_id INTEGER PRIMARY KEY REFERENCES hypotheses(id),
+    n_bars        INTEGER NOT NULL,
+    first_date    TEXT    NOT NULL,
+    last_date     TEXT    NOT NULL,
+    payload       BLOB    NOT NULL   -- zlib-compressed JSON {dates, returns}
 );
 
 CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status);
@@ -184,6 +194,70 @@ class HypothesisMemory:
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Trial return series
+    # ------------------------------------------------------------------
+    #
+    # Stored for EVERY trial, accepted or rejected. The Deflated Sharpe penalty
+    # assumes N *independent* trials, and thousands of near-duplicate variations
+    # on one idea are not independent — but establishing the effective N means
+    # clustering trials by return correlation, which is impossible after the
+    # fact if only the winners' returns were kept. Rejected trials are exactly
+    # the ones that reveal how redundant the search was.
+    #
+    # Payload is zlib-compressed JSON: ~1,600 daily returns plus their dates
+    # compresses to a few KB, so several thousand trials cost tens of MB.
+
+    def store_trial_returns(
+        self,
+        hyp_id: int,
+        dates: list[str],
+        returns: list[float],
+    ) -> None:
+        """Persist a trial's OOS return series. No-op on an empty series."""
+        if not dates or not returns:
+            return
+        payload = zlib.compress(
+            json.dumps({"dates": list(dates), "returns": [float(r) for r in returns]}).encode(),
+            level=6,
+        )
+        self._conn.execute(
+            """INSERT OR REPLACE INTO trial_returns
+                   (hypothesis_id, n_bars, first_date, last_date, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (hyp_id, len(returns), dates[0], dates[-1], payload),
+        )
+        self._conn.commit()
+
+    def get_trial_returns(self, hyp_id: int) -> Optional[pd.Series]:
+        row = self._conn.execute(
+            "SELECT payload FROM trial_returns WHERE hypothesis_id = ?", (hyp_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = json.loads(zlib.decompress(row[0]).decode())
+        return pd.Series(data["returns"], index=pd.to_datetime(data["dates"]))
+
+    def all_trial_returns(self, statuses: Optional[list[str]] = None) -> dict[int, pd.Series]:
+        """Every stored trial series, for correlation clustering of effective N."""
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            rows = self._conn.execute(
+                f"""SELECT t.hypothesis_id, t.payload FROM trial_returns t
+                    JOIN hypotheses h ON h.id = t.hypothesis_id
+                    WHERE h.status IN ({placeholders})""",
+                statuses,
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT hypothesis_id, payload FROM trial_returns"
+            ).fetchall()
+        out: dict[int, pd.Series] = {}
+        for hyp_id, payload in rows:
+            data = json.loads(zlib.decompress(payload).decode())
+            out[hyp_id] = pd.Series(data["returns"], index=pd.to_datetime(data["dates"]))
+        return out
 
     def get_all_for_trace(self) -> list[dict]:
         """Return all hypotheses ordered by trial_number for LLM trace."""
