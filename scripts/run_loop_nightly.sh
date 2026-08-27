@@ -44,12 +44,20 @@ echo "--- Step 1: Update vault with latest bars ---"
 timeout --kill-after=30 900 "$PYTHON" scripts/update_vault.py \
     || echo "WARNING: vault update failed/timed out (non-fatal)"
 
-echo "--- Step 2: Research loop (50 iterations) ---"
-timeout --kill-after=60 7200 "$PYTHON" scripts/run_loop.py \
-    --iterations 50 \
-    --budget 999 \
-    --model claude-sonnet-4-6 \
-    --data data/loop_data.parquet || echo "WARNING: research loop failed/timed out (non-fatal)"
+echo "--- Step 2: Research loop — PAUSED 2026-08-27 ---"
+# Paused deliberately. The loop admits on PSR > 0.65 vs a fixed market
+# benchmark, NOT on the deflated Sharpe PLAN.md specifies, and every batch of
+# 50 hypotheses raises E[max SR] for the entire book (~sqrt(2 ln N)) — so
+# running it actively raises the bar on the signals already in the library
+# while adding new ones that were never held to the stated standard.
+# Re-enable once the admission gate is settled (PLAN.md Phase 5, "Admission
+# gate rework"). To resume, delete this block and restore the call below.
+echo "SKIPPED: research loop paused pending admission-gate rework"
+# timeout --kill-after=60 7200 "$PYTHON" scripts/run_loop.py \
+#     --iterations 50 \
+#     --budget 999 \
+#     --model claude-sonnet-4-6 \
+#     --data data/loop_data.parquet || echo "WARNING: research loop failed/timed out (non-fatal)"
 
 echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
 timeout --kill-after=30 900 "$PYTHON" scripts/run_paper.py \

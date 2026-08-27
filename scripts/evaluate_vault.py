@@ -20,8 +20,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from autoalpha.evaluation.alpha import compute_benchmark_alpha
 from autoalpha.research.code_validator import wrap_predict_body
 from autoalpha.research.subprocess_runner import run_strategy_subprocess
+
+OUT_PATH = Path("data/vault_results.json")
+HOLDOUT_LOCK = Path("vault_holdout.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,7 +82,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Vault holdout evaluation")
     parser.add_argument("--db", default=None, help="Path to memory.db")
     parser.add_argument("--data", default="data/vault_data.parquet", help="Vault parquet")
+    parser.add_argument("--max-tickers", type=int, default=0,
+                        help="Cap the backtest universe (0 = full universe, the default). "
+                             "The holdout must use the same universe as paper trading or the "
+                             "two stages of the promotion gate are not comparable.")
+    parser.add_argument("--end", default=None,
+                        help="Last date to evaluate (default: holdout_end from vault_holdout.json). "
+                             "Keeps the holdout window disjoint from the paper period, so the two "
+                             "stages of the promotion gate stay independent pieces of evidence.")
     args = parser.parse_args()
+
+    import os
+    os.environ["AUTOALPHA_MAX_BACKTEST_TICKERS"] = str(args.max_tickers)
+    log.info("Backtest universe cap: %s",
+             "none (full universe)" if args.max_tickers <= 0 else args.max_tickers)
+
+    end_date = args.end
+    if end_date is None and HOLDOUT_LOCK.exists():
+        end_date = json.loads(HOLDOUT_LOCK.read_text()).get("holdout_end")
 
     vault_path = Path(args.data).resolve()
     if not vault_path.exists():
@@ -97,6 +118,12 @@ def main() -> None:
         sys.exit(0)
 
     vault_data = pd.read_parquet(vault_path)
+    if end_date:
+        keep = vault_data.index.get_level_values("date") <= pd.Timestamp(end_date)
+        dropped = int((~keep).sum())
+        vault_data = vault_data[keep]
+        log.info("Clamped to holdout window ending %s (dropped %d post-window rows)",
+                 end_date, dropped)
     date_range = (
         vault_data.index.get_level_values("date").min().date(),
         vault_data.index.get_level_values("date").max().date(),
@@ -159,6 +186,41 @@ def main() -> None:
     print("-" * 75)
     _print_stats("COMBINED PORTFOLIO (equal-weight signals)", portfolio)
     print("=" * 75)
+
+    # Benchmark-relative alpha — the holdout stage of the promotion gate.
+    print()
+    print("VAULT ALPHA vs EQUAL-WEIGHT BENCHMARK")
+    print("-" * 88)
+    print(f"  {'Signal':<40}  {'Alpha/yr':>9}  {'t':>6}  {'beta':>6}  {'IR':>6}  {'n':>5}")
+    payload = {"holdout_start": str(date_range[0]), "holdout_end": str(date_range[1]),
+               "n_signals": len(signal_returns), "signals": {},
+               # Daily series are persisted so the promotion gate can pool this
+               # window with the forward paper window into one regression —
+               # both are post-selection, contiguous, and disjoint.
+               "benchmark_daily_returns": {str(d.date()): round(float(v), 6)
+                                           for d, v in benchmark.items()}}
+    for name, rets in list(signal_returns.items()) + [("COMBINED PORTFOLIO", portfolio)]:
+        st = compute_benchmark_alpha(rets, benchmark)
+        if not st.get("available"):
+            print(f"  {name:<40}  unavailable — {st.get('reason')}")
+            continue
+        print(f"  {name:<40}  {st['alpha_annualized']*100:>8.1f}%  {st['alpha_t']:>6.2f}  "
+              f"{st['beta']:>6.2f}  {st['information_ratio']:>6.2f}  {st['n_overlap']:>5}")
+        sharpe = rets.mean() / rets.std() * (252 ** 0.5) if rets.std() > 0 else 0.0
+        nav = pd.concat([pd.Series([1.0]), (1 + rets).cumprod()])
+        payload["signals"][name] = {
+            "sharpe": round(float(sharpe), 3),
+            "max_drawdown": round(float(((nav - nav.cummax()) / nav.cummax()).min()) * 100, 2),
+            "total_return": round(float((1 + rets).prod() - 1) * 100, 2),
+            "alpha_annualized": round(st["alpha_annualized"] * 100, 2),
+            "alpha_t": round(st["alpha_t"], 3),
+            "beta": round(st["beta"], 3),
+            "information_ratio": round(st["information_ratio"], 3),
+            "n_bars": int(st["n_overlap"]),
+            "daily_returns": {str(d.date()): round(float(v), 6) for d, v in rets.items()},
+        }
+    OUT_PATH.write_text(json.dumps(payload, indent=2))
+    log.info("Saved %s", OUT_PATH)
 
     # IS → OOS Sharpe comparison
     print()

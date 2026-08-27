@@ -128,11 +128,24 @@ def _main():
     )
     _all_tickers = sorted(set(_all_tickers))
 
-    # Sample tickers if universe is large — use n_trials as seed so each
-    # trial tests a different slice, improving coverage across iterations.
-    MAX_BACKTEST_TICKERS = 400
-    if len(_all_tickers) > MAX_BACKTEST_TICKERS:
-        rng = random.Random(n_trials)
+    # Sample tickers if the universe is large. The seed is FIXED, not derived
+    # from n_trials: seeding by trial count gave every hypothesis a different
+    # 400-of-2550 draw, so a signal's Sharpe was partly an artifact of which
+    # universe its trial number happened to pull, two signals were never
+    # compared on the same data, and no backtest could be reproduced later.
+    # Coverage across the full universe is a separate concern — vary
+    # AUTOALPHA_UNIVERSE_SEED deliberately and re-run the whole book, rather
+    # than letting it drift silently between trials.
+    # The cap is a speed compromise for the research loop. Evaluation paths that
+    # must match paper trading (which uses the full universe) set
+    # AUTOALPHA_MAX_BACKTEST_TICKERS=0 to disable sampling entirely — a signal
+    # whose filters need N survivors fires at a completely different rate on 400
+    # names than on 2,700, so a subsampled holdout is not comparable to paper.
+    import os as _os
+    MAX_BACKTEST_TICKERS = int(_os.environ.get("AUTOALPHA_MAX_BACKTEST_TICKERS", "400"))
+    UNIVERSE_SEED = int(_os.environ.get("AUTOALPHA_UNIVERSE_SEED", "20240521"))
+    if MAX_BACKTEST_TICKERS > 0 and len(_all_tickers) > MAX_BACKTEST_TICKERS:
+        rng = random.Random(UNIVERSE_SEED)
         _all_tickers = sorted(rng.sample(_all_tickers, MAX_BACKTEST_TICKERS))
 
     # Load only the sampled tickers via filter pushdown — row groups are

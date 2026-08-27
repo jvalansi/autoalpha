@@ -347,3 +347,116 @@ class TestLibrarySync:
                     "SELECT days_at_floor FROM signal_library WHERE name = 'dud'"
                 ).fetchone()[0]
                 assert days == 2
+
+
+# ---------------------------------------------------------------------------
+# Promotion gate + deterministic backtest universe
+# ---------------------------------------------------------------------------
+
+def _load_gate():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "_promotion", Path(__file__).resolve().parents[1] / "scripts" / "promotion_status.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_HOLD_OK = {"alpha_annualized": 18.0, "alpha_t": 1.5, "max_drawdown": -12.0}
+_FWD_OK = {"alpha_annualized": 30.0, "alpha_t": 1.4, "n_bars": 80}
+_POOL_OK = {"available": True, "alpha_t": 2.3, "alpha_annualized": 0.20}
+
+
+class TestPromotionGate:
+    def test_passes_on_pooled_significance_with_both_windows_positive(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(_HOLD_OK, _FWD_OK, _POOL_OK)
+        assert ok and reasons == []
+
+    def test_underpowered_windows_can_still_pass_pooled(self):
+        # Neither window reaches t=2 alone; together they do. That is the point
+        # of pooling, and the reason a per-window gate was the wrong design.
+        g = _load_gate()
+        ok, _ = g.gate_verdict(
+            {"alpha_annualized": 18.0, "alpha_t": 1.49, "max_drawdown": -12.0},
+            {"alpha_annualized": 36.0, "alpha_t": 1.52, "n_bars": 59},
+            {"available": True, "alpha_t": 2.05},
+        )
+        assert ok
+
+    def test_pooled_significance_cannot_mask_a_negative_window(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(
+            _HOLD_OK, {"alpha_annualized": -12.0, "alpha_t": -0.8, "n_bars": 80}, _POOL_OK)
+        assert not ok
+        assert "forward alpha -12.0%" in reasons
+
+    def test_strong_backtest_cannot_substitute_for_forward_evidence(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(_HOLD_OK, {}, {"available": False})
+        assert not ok
+        assert "no pooled result" in reasons and "no forward result" in reasons
+
+    def test_weak_pooled_blocks(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(
+            _HOLD_OK, _FWD_OK, {"available": True, "alpha_t": 1.64})
+        assert not ok
+        assert "pooled t=1.64" in reasons
+
+    def test_drawdown_constraint_is_hard(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(
+            {"alpha_annualized": 18.0, "alpha_t": 5.0, "max_drawdown": -31.0},
+            _FWD_OK, _POOL_OK)
+        assert not ok
+        assert "holdout DD=31%" in reasons
+
+    def test_short_forward_window_blocks(self):
+        g = _load_gate()
+        ok, reasons = g.gate_verdict(
+            _HOLD_OK, {"alpha_annualized": 30.0, "alpha_t": 3.0, "n_bars": 20}, _POOL_OK)
+        assert not ok
+        assert "only 20 forward bars" in reasons
+
+    def test_pooling_concatenates_both_windows(self):
+        g = _load_gate()
+        vault = {
+            "benchmark_daily_returns": {f"2024-06-{d:02d}": 0.001 for d in range(1, 26)},
+            "signals": {"s": {"daily_returns": {f"2024-06-{d:02d}": 0.002 for d in range(1, 26)}}},
+        }
+        paper = {
+            "benchmark": {"daily_returns": {f"2026-06-{d:02d}": 0.001 for d in range(1, 26)}},
+            "signals": [{"name": "s",
+                         "daily_returns": {f"2026-06-{d:02d}": 0.002 for d in range(1, 26)}}],
+        }
+        pooled = g.pooled_alpha("s", vault, paper)
+        assert pooled["n_overlap"] == 50  # both windows, not one
+
+    def test_pooling_reports_unavailable_with_only_one_window(self):
+        g = _load_gate()
+        pooled = g.pooled_alpha("s", {"signals": {}}, {"signals": []})
+        assert pooled["available"] is False
+
+
+class TestDeterministicUniverse:
+    def test_backtest_universe_is_not_seeded_by_trial_count(self):
+        # Seeding the ticker sample by n_trials gave every hypothesis a different
+        # slice of the universe, so signals were never compared on the same data
+        # and no backtest could be reproduced. Guard against a silent revert.
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1]
+               / "autoalpha" / "research" / "subprocess_runner.py").read_text()
+        assert "random.Random(n_trials)" not in src
+        assert "AUTOALPHA_UNIVERSE_SEED" in src
+        assert "rng = random.Random(UNIVERSE_SEED)" in src
+
+    def test_universe_cap_is_overridable_for_evaluation_paths(self):
+        # The holdout must be able to run the same universe as paper trading;
+        # a subsampled holdout is not comparable evidence.
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1]
+               / "autoalpha" / "research" / "subprocess_runner.py").read_text()
+        assert "AUTOALPHA_MAX_BACKTEST_TICKERS" in src
+        assert "if MAX_BACKTEST_TICKERS > 0 and len(_all_tickers) > MAX_BACKTEST_TICKERS:" in src
