@@ -12,3 +12,15 @@ data/**/*.zip
 *.db
 vault/
 autoalpha.egg-info/
+
+# Runtime state written by the paper/live loops
+data/.last_posted_paper_end
+data/fetch_failed.json
+data/last_paper_report.txt
+data/paper_pnl.json
+data/signal_validation.json
+data/signal_weights.json
+data/vault_results.json
+
+# cc-connect workspace metadata
+.cc-connect/
