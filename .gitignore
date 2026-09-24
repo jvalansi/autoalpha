@@ -24,3 +24,4 @@ data/vault_results.json
 
 # cc-connect workspace metadata
 .cc-connect/
+data/live/
