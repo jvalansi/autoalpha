@@ -10,9 +10,10 @@ through autoalpha's holdout/forward promotion gate:
   Exit: 2.5 x ATR(14, Wilder) trailing stop on the close, or after 10 bars.
   Sizing: 10% of the book per position (10 slots), the rest in cash.
 
-Differences that remain: autoalpha fills at the next bar's open, so entries
-land one bar after the reaction day (earnings-trader buys near its close), and
-stops/exits also fill at the next open. The guidance filter is not ported —
+In backtests autoalpha fills at the next bar's open, so entries land one bar
+after the reaction day (earnings-trader buys at the reaction day's open) and
+stops/exits also fill a bar later. The live runner (scripts/run_live_pead.py)
+trades at the open like earnings-trader. The guidance filter is not ported —
 FMP no longer returns guidanceEps, so it always passes in earnings-trader too.
 """
 from __future__ import annotations
@@ -44,7 +45,17 @@ class EarningsTraderPEAD(Strategy):
     def fit(self, data: pd.DataFrame) -> None:
         self.reset()
 
+    def state(self) -> dict:
+        """Open positions, for persisting between live runs."""
+        return {t: dict(p) for t, p in self._positions.items()}
+
+    def load_state(self, positions: dict) -> None:
+        self._positions = {t: dict(p) for t, p in positions.items()}
+
     def _update_atr(self, bars: pd.DataFrame) -> None:
+        if "atr_14" in bars.columns:  # live: ATR precomputed from full daily history
+            self._atr = bars["atr_14"].combine_first(self._atr)
+            return
         pc = self._prev_close.reindex(bars.index)
         tr = pd.concat([bars["High"] - bars["Low"], (bars["High"] - pc).abs(), (bars["Low"] - pc).abs()],
                        axis=1).max(axis=1)
