@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -20,6 +22,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 import yfinance as yf
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from autoalpha.data.event_features import (
+    EVENT_COLS, event_features, fetch_earnings_calendar, fetch_sector_closes,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
@@ -239,7 +246,7 @@ def main() -> None:
         "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
         "analyst_revision_3m", "dividend_yield", "fcf_yield",
         "vix", "yield_10y", "yield_2y", "credit_spread", "yield_curve",
-        "sector", "sentiment_score",
+        "sector", "sentiment_score", *EVENT_COLS,
     ]
 
     new_rows = []
@@ -276,6 +283,21 @@ def main() -> None:
         return
 
     new_df = pd.concat(new_rows).sort_index(level="date")
+
+    # Earnings-event features need the lookback window, so compute on history + new rows
+    try:
+        bar_cols = ["date", "ticker", "Open", "Close", "sector"]
+        combined = pd.concat([hist_df[bar_cols], new_df.reset_index()[bar_cols]], ignore_index=True)
+        combined = combined.drop_duplicates(["date", "ticker"], keep="last")
+        calendar = fetch_earnings_calendar(history_start[:10], today.strftime("%Y-%m-%d"),
+                                           os.environ["FMP_API_KEY"])
+        sector_closes = fetch_sector_closes(history_start[:10], end_str)
+        ev = event_features(combined, calendar, sector_closes)
+        ev.index = pd.MultiIndex.from_frame(combined[["date", "ticker"]])
+        new_df[EVENT_COLS] = ev.reindex(new_df.index)[EVENT_COLS].to_numpy()
+    except Exception as exc:
+        log.warning("Event features failed, leaving NaN: %s", exc)
+
     for col in new_df.select_dtypes(include="number").columns:
         new_df[col] = new_df[col].astype("float64")
 
@@ -286,8 +308,9 @@ def main() -> None:
              new_df.index.get_level_values("date").max().date())
 
     # Append to parquet
-    table = pa.Table.from_pandas(new_df)
     existing_schema = pq.read_schema(VAULT_PATH)
+    # Drop columns the vault doesn't have yet (backfill with scripts/add_event_features.py)
+    table = pa.Table.from_pandas(new_df).select(existing_schema.names)
     table = table.cast(existing_schema)
     with pq.ParquetWriter(str(VAULT_PATH) + ".tmp", existing_schema) as writer:
         for batch in pq.ParquetFile(VAULT_PATH).iter_batches():

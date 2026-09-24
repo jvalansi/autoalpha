@@ -11,6 +11,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -18,6 +20,11 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from autoalpha.data.event_features import (
+    EVENT_COLS, event_features, fetch_earnings_calendar, fetch_sector_closes,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -205,7 +212,8 @@ def point_in_time_join(daily_index: pd.DatetimeIndex, df: pd.DataFrame, date_col
     return df.reindex(daily_index, method="ffill")
 
 
-def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame) -> pd.DataFrame:
+def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame,
+                 calendar: pd.DataFrame, sector_closes: pd.DataFrame) -> pd.DataFrame:
     full = load_ohlcv_full(ticker)
     if full.empty or len(full) < 300:
         log.warning("Skipping %s — insufficient OHLCV data", ticker)
@@ -228,6 +236,9 @@ def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame) -> pd.DataFra
     df["sector"] = sector
     for col in NAN_COLS:
         df[col] = np.nan
+    bars = pd.DataFrame({"date": df.index, "ticker": ticker, "Open": df["Open"].to_numpy(),
+                         "Close": df["Close"].to_numpy(), "sector": sector})
+    df[EVENT_COLS] = event_features(bars, calendar, sector_closes)[EVENT_COLS].to_numpy()
 
     # Enforce canonical column order; missing columns become NaN
     canonical = [
@@ -239,7 +250,7 @@ def build_ticker(ticker: str, vix: pd.Series, macro: pd.DataFrame) -> pd.DataFra
         "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
         "analyst_revision_3m", "dividend_yield", "fcf_yield",
         "vix", "yield_10y", "yield_2y", "credit_spread", "yield_curve",
-        "sector", "sentiment_score",
+        "sector", "sentiment_score", *EVENT_COLS,
     ]
     df = df.reindex(columns=canonical)
 
@@ -265,6 +276,8 @@ def main() -> None:
     vix.index = pd.to_datetime(vix.index).tz_localize(None).normalize()
     macro = fetch_macro(start, end)
     macro.index = pd.to_datetime(macro.index).tz_localize(None).normalize()
+    calendar = fetch_earnings_calendar(start, end, os.environ["FMP_API_KEY"])
+    sector_closes = fetch_sector_closes(start, end)
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     writer = None
@@ -273,7 +286,7 @@ def main() -> None:
 
     for ticker in TICKERS:
         log.info("Processing %s...", ticker)
-        df = build_ticker(ticker, vix, macro)
+        df = build_ticker(ticker, vix, macro, calendar, sector_closes)
         if df.empty:
             continue
         df = df.swaplevel()

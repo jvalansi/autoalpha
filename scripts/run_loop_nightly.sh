@@ -26,7 +26,7 @@ echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 # unrelated secrets including a stale ANTHROPIC_API_KEY that breaks the
 # claude CLI subscription auth).
 if [ -f "$ENV_FILE" ]; then
-    for var in DISCORD_BOT_TOKEN; do
+    for var in DISCORD_BOT_TOKEN FMP_API_KEY; do
         value=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
         [ -n "$value" ] && export "$var"="$value"
     done

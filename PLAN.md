@@ -173,6 +173,14 @@ Goal: fill in the NaN feature columns and run enough iterations to build a libra
 - [x] `yield_10y`, `yield_2y`, `credit_spread` — DGS10, DGS2, BAA10Y (Moody's BAA minus 10yr Treasury) from FRED public CSV endpoint (no auth); 100% fill rate
 - [x] `analyst_revision_3m` — recomputed from FMP `/analyst-estimates` (`epsAvg` QoQ change %); fixed stale cache bug (wrong column names); 71% fill rate (NaN for first quarter per ticker, expected)
 
+**Priority 1b — Earnings-event features (earnings-trader PEAD parity, 2026-09-24):**
+- [x] `gap_1d`, `ret_10d`, `sector_ret_1d`, `days_since_earnings` — `autoalpha/data/event_features.py`; reaction bar from the FMP v3 earnings calendar (`bmo` → report date, amc/unknown → next bar, same as earnings-trader's backtest); sector SPDR ETF via earnings-trader's sector map. Wired into both build scripts and `update_vault.py`; backfilled into the existing parquets with `scripts/add_event_features.py` (the per-ticker FMP cache is gone, so a full rebuild would refetch everything). Guidance filter not ported: FMP `/stable/earnings` no longer returns `guidanceEps`, so earnings-trader's guidance filter always passes
+- [x] `scripts/check_pead_parity.py` — runs earnings-trader's own backtest entry code on autoalpha's bars for 8,867 cached events (2022-01 → 2026-08). Gap and 9-day run-up match 100% / 99.8%, reaction bar 99.3%, entry decision 98.8% (798 both enter, 77 earnings-trader only, 27 autoalpha only)
+- [ ] `earnings_surprise` lags the reaction bar on ~6% of loop events: it's keyed on `/stable/earnings` dates, which sometimes fall a day after the calendar's report date (e.g. AAPL 2026-04-29 vs 04-30), plus ~8% NaN. Candidate fix: derive surprise from the calendar rows (they carry eps/revenue actuals + estimates) — changes an existing column, so needs a loop re-score decision
+- [ ] **Vault fundamentals are frozen**: `update_vault.py` forward-fills the last known `earnings_surprise`, `roe`, valuation etc. for every appended row, so no report after the incremental updater took over (~2026-06) ever reaches the vault/paper data. Parity check shows surprise matching only 74% of vault events vs 83% in loop, concentrated in 2026-06 → 08
+- [ ] Autoalpha fills at the next bar's open, so an event strategy enters one bar after earnings-trader's backtest (which enters at the reaction-day open) and ~overnight after its live 4:15 PM entry
+- [ ] Event strategies also need the prompt's "weights sum to 1.0" rule relaxed (partial investment / cash), otherwise a handful of qualifying names each get a large weight
+
 **Priority 2 — Build larger signal library:**
 - [ ] Run 3–5 more 20-iteration batches (`python scripts/run_loop.py --iterations 20 --budget 5.00`) to target 15–20 active signals; Darwinian weighting is meaningful only with ≥10 signals
 - [ ] Fix model verbosity: add explicit "max 80 lines of Python" constraint to system prompt; reduces code validation failures

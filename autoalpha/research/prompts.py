@@ -48,6 +48,11 @@ Arguments available inside predict():
     yield_10y, yield_2y, credit_spread           (macro rates from FRED, same for all tickers each bar)
     yield_curve                                  (yield_10y - yield_2y; positive = normal, negative = inverted)
     sector                                       (GICS sector string, e.g. "Technology", "Financials")
+    gap_1d                                       (overnight gap: Open / previous Close - 1)
+    ret_10d                                      (10-day return; (1+ret_10d)/(1+ret_1d)-1 = 9-day run-up before today)
+    sector_ret_1d                                (today's return of the stock's sector SPDR ETF, SPY if unknown)
+    days_since_earnings                          (trading days since the first bar reacting to the latest report;
+                                                  0 = reaction day, so gap_1d there is the earnings gap; NaN = none yet)
   DO NOT USE (still NaN):
     sentiment_score
 - `bar_date` — the current bar's date (may be None; guard with `if bar_date is None: return {}`)
