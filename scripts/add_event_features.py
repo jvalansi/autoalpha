@@ -47,7 +47,13 @@ def backfill(path: Path, calendar: pd.DataFrame, sector_closes: pd.DataFrame,
         bars = pd.concat([bars, warmup], ignore_index=True)
     ev = event_features(bars, calendar, sector_closes).iloc[:n]
     del bars
+    rewrite_columns(path, ev)
+    log.info("%s: %d rows, non-null share %s", path, n,
+             {c: round(float(ev[c].notna().mean()), 3) for c in EVENT_COLS})
 
+
+def rewrite_columns(path: Path, new: pd.DataFrame) -> None:
+    """Replace/append new's columns in path; new is aligned to the file's row order."""
     tmp = Path(str(path) + ".tmp")
     src = pq.ParquetFile(path)
     writer = None
@@ -55,19 +61,16 @@ def backfill(path: Path, calendar: pd.DataFrame, sector_closes: pd.DataFrame,
     for i in range(src.num_row_groups):
         df = src.read_row_group(i).to_pandas()
         k = len(df)
-        df = df.drop(columns=[c for c in EVENT_COLS if c in df.columns])
-        for col in EVENT_COLS:
-            df[col] = ev[col].to_numpy()[offset:offset + k]
+        for col in new.columns:
+            df[col] = new[col].to_numpy()[offset:offset + k]
         offset += k
         table = pa.Table.from_pandas(df)
         if writer is None:
             writer = pq.ParquetWriter(tmp, table.schema)
         writer.write_table(table.cast(writer.schema))
     writer.close()
-    assert offset == n, (offset, n)
+    assert offset == len(new), (offset, len(new))
     tmp.rename(path)
-    log.info("%s: %d rows, non-null share %s", path, n,
-             {c: round(float(ev[c].notna().mean()), 3) for c in EVENT_COLS})
 
 
 def main() -> None:

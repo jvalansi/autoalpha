@@ -1,7 +1,9 @@
 """Earnings-event features mirroring earnings-trader's PEAD entry filters.
 
     EVENT_COLS                                   new dataset columns, in canonical order
-    fetch_earnings_calendar(start, end, key)     -> DataFrame[ticker, date, time]  (FMP v3, has amc/bmo)
+    fetch_earnings_calendar(start, end, key)     -> DataFrame[ticker, date, time, eps, epsEstimated, revenue,
+                                                              revenueEstimated]  (FMP v3, has amc/bmo)
+    latest_surprise(bars, calendar)              -> DataFrame[earnings_surprise, revenue_surprise] aligned to bars
     fetch_sector_closes(start, end)              -> DataFrame(index=date, columns=ETF symbols)
     event_features(bars, calendar, sector_closes)-> DataFrame[EVENT_COLS] aligned to bars.index
 
@@ -45,6 +47,7 @@ FALLBACK_ETF = "SPY"
 
 _CALENDAR_URL = "https://financialmodelingprep.com/api/v3/earning_calendar"
 _WINDOW_DAYS = 90  # the endpoint accepts at most ~3 months per request
+_CAL_COLS = ["symbol", "date", "time", "eps", "epsEstimated", "revenue", "revenueEstimated"]
 
 
 def fetch_earnings_calendar(start: str, end: str, api_key: str) -> pd.DataFrame:
@@ -64,15 +67,36 @@ def fetch_earnings_calendar(start: str, end: str, api_key: str) -> pd.DataFrame:
         if not isinstance(data, list):
             raise RuntimeError(f"FMP earnings calendar error: {data}")
         if data:
-            frames.append(pd.DataFrame(data)[["symbol", "date", "time"]])
+            frames.append(pd.DataFrame(data).reindex(columns=_CAL_COLS))
         log.info("Earnings calendar %s → %s: %d rows", lo.date(), hi.date(), len(data))
         lo = hi + pd.Timedelta(days=1)
     if not frames:
-        return pd.DataFrame(columns=["ticker", "date", "time"])
+        return pd.DataFrame(columns=["ticker", *_CAL_COLS[1:]])
     cal = pd.concat(frames).rename(columns={"symbol": "ticker"})
     cal["date"] = pd.to_datetime(cal["date"]).dt.normalize()
     cal["time"] = cal["time"].fillna("").str.lower()
+    for col in _CAL_COLS[3:]:
+        cal[col] = pd.to_numeric(cal[col], errors="coerce")
     return cal.drop_duplicates(["ticker", "date"]).reset_index(drop=True)
+
+
+def latest_surprise(bars: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
+    """Surprise of the latest reported quarter on or before each bar's date (NaN if none).
+
+    Same formula as the build scripts: (actual - estimate) / |estimate|, NaN when estimate is 0.
+    Keyed on the report date, like the build scripts' forward-fill.
+    """
+    cal = calendar.dropna(subset=["eps"]).copy()
+    cal["earnings_surprise"] = (cal["eps"] - cal["epsEstimated"]) / cal["epsEstimated"].replace(0, np.nan).abs()
+    cal["revenue_surprise"] = (cal["revenue"] - cal["revenueEstimated"]) / cal["revenueEstimated"].replace(0, np.nan).abs()
+    left = pd.DataFrame({"date": pd.to_datetime(bars["date"]).to_numpy().astype("datetime64[ns]"),
+                         "ticker": bars["ticker"].astype(str).to_numpy(),
+                         "_row": np.arange(len(bars))}).sort_values("date")
+    right = cal[["date", "ticker", "earnings_surprise", "revenue_surprise"]].sort_values("date")
+    right["date"] = right["date"].astype("datetime64[ns]")
+    merged = pd.merge_asof(left, right, on="date", by="ticker").sort_values("_row")
+    return pd.DataFrame(merged[["earnings_surprise", "revenue_surprise"]].to_numpy(),
+                        index=bars.index, columns=["earnings_surprise", "revenue_surprise"])
 
 
 def fetch_sector_closes(start: str, end: str) -> pd.DataFrame:

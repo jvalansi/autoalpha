@@ -25,7 +25,7 @@ import yfinance as yf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autoalpha.data.event_features import (
-    EVENT_COLS, event_features, fetch_earnings_calendar, fetch_sector_closes,
+    EVENT_COLS, event_features, fetch_earnings_calendar, fetch_sector_closes, latest_surprise,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
@@ -295,6 +295,11 @@ def main() -> None:
         ev = event_features(combined, calendar, sector_closes)
         ev.index = pd.MultiIndex.from_frame(combined[["date", "ticker"]])
         new_df[EVENT_COLS] = ev.reindex(new_df.index)[EVENT_COLS].to_numpy()
+        # Refresh surprise from the calendar; forward-filling the last row froze it (2026-06 → 09)
+        fresh = latest_surprise(new_df.reset_index(), calendar)
+        for col in fresh.columns:
+            vals = fresh[col].to_numpy()
+            new_df[col] = np.where(np.isnan(vals), new_df[col].to_numpy(dtype=float), vals)
     except Exception as exc:
         log.warning("Event features failed, leaving NaN: %s", exc)
 

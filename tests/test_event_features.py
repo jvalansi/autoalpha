@@ -34,3 +34,19 @@ def test_event_features():
     # B: amc on Fri Jan 5 reacts Mon Jan 8 (bar 5); the Saturday report also reacts Mon
     assert b["days_since_earnings"].iloc[:5].isna().all()
     assert list(b["days_since_earnings"].iloc[5:7]) == [0, 1]
+
+
+def test_latest_surprise():
+    from autoalpha.data.event_features import latest_surprise
+    bars = pd.DataFrame({"date": pd.to_datetime(["2024-01-02", "2024-01-05", "2024-01-09", "2024-01-09"]),
+                         "ticker": ["A", "A", "A", "B"]})
+    calendar = pd.DataFrame({
+        "ticker": ["A", "A", "B"],
+        "date": pd.to_datetime(["2024-01-03", "2024-01-09", "2024-01-02"]),
+        "eps": [1.1, np.nan, 0.5], "epsEstimated": [1.0, 2.0, 0.0],  # A's 01-09 row not yet reported
+        "revenue": [90.0, np.nan, 10.0], "revenueEstimated": [100.0, 5.0, 8.0],
+    })
+    out = latest_surprise(bars, calendar)
+    assert np.isnan(out["earnings_surprise"].iloc[0])
+    assert np.isclose(out["earnings_surprise"].iloc[1], 0.1) and np.isclose(out["revenue_surprise"].iloc[2], -0.1)
+    assert np.isnan(out["earnings_surprise"].iloc[3]) and np.isclose(out["revenue_surprise"].iloc[3], 0.25)
