@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from autoalpha.core.executors import SimExecutor
 from autoalpha.core.providers import HistoricalProvider
-from autoalpha.core.runner import Runner
+from autoalpha.core.runner import Runner, _normalize_targets
 from autoalpha.evaluation.alpha import compute_benchmark_alpha, ff5_alpha_stats
 from autoalpha.evaluation.library import SignalLibrary
 from autoalpha.research.code_validator import wrap_predict_body
@@ -310,7 +310,7 @@ def main() -> None:
             open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
             if prev_targets and open_prices:
                 executor.execute(prev_targets, bar_date, open_prices)
-            prev_targets = strategy.predict(bar_df, bar_date=pd.Timestamp(bar_date))
+            prev_targets = _normalize_targets(strategy.predict(bar_df, bar_date=pd.Timestamp(bar_date)))
 
         rets = executor.returns()
         if rets.empty:

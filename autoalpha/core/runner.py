@@ -15,13 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_targets(targets: dict[str, float]) -> dict[str, float]:
-    """Clamp weights to [0,1] and normalize so they sum to at most 1.0."""
+    """Drop non-positive weights and scale down so they sum to at most 1.0.
+
+    Weights summing to less than 1 are kept as-is — the remainder is cash.
+    """
     if not targets:
         return targets
-    pos = {t: max(0.0, w) for t, w in targets.items() if w > 0}
+    pos = {t: w for t, w in targets.items() if w > 0}
     total = sum(pos.values())
-    if total <= 0:
-        return {}
+    if total <= 1.0:
+        return pos
     return {t: w / total for t, w in pos.items()}
 
 

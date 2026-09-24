@@ -448,3 +448,9 @@ def test_runner_fold_isolation():
     # Each fold contributes independent returns (executor was reset between folds)
     # Verify executor ends with clean state from last fold reset
     assert executor._positions == {} or True  # positions left from last fold are fine
+
+
+def test_normalize_targets_keeps_cash():
+    from autoalpha.core.runner import _normalize_targets
+    assert _normalize_targets({"A": 0.1, "B": 0.2}) == {"A": 0.1, "B": 0.2}   # 70% cash kept
+    assert _normalize_targets({"A": 3.0, "B": 1.0, "C": -1.0}) == {"A": 0.75, "B": 0.25}
