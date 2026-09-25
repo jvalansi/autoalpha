@@ -51,9 +51,15 @@ class SimExecutor(Executor):
         cost_bps: float = DEFAULT_TRANSACTION_COST_BPS,
         overlay: float = 1.0,
         max_weight: float | None = 0.10,
+        hold_unchanged: bool = False,
     ):
+        """hold_unchanged: a held name whose target equals the previous bar's target
+        is left to drift instead of being traded back to weight — for strategies that
+        rebalance periodically and repeat the same targets in between."""
         self._capital = initial_capital
         self._cost_bps = cost_bps
+        self._hold_unchanged = hold_unchanged
+        self._last_targets: dict[str, float] = {}
         self._overlay = overlay
         self._max_weight = max_weight
         self._positions: dict[str, float] = {}  # ticker -> shares
@@ -71,6 +77,7 @@ class SimExecutor(Executor):
         self._cash = self._capital
         self._nav_history = {}
         self._last_price = {}
+        self._last_targets = {}
 
     def _cap_weights(self, targets: dict[str, float]) -> dict[str, float]:
         """Cap each positive weight at max_weight, drop non-positive weights.
@@ -117,7 +124,11 @@ class SimExecutor(Executor):
                     )
                     self._positions.pop(ticker)
 
+        last_targets, self._last_targets = self._last_targets, dict(targets)
         for ticker, target_frac in targets.items():
+            if (self._hold_unchanged and ticker in self._positions
+                    and last_targets.get(ticker) == target_frac):
+                continue
             price = prices.get(ticker)
             if price is None or price <= 0:
                 logger.warning("No price for %s on %s — skipping", ticker, bar_date)
