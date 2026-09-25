@@ -217,6 +217,19 @@ The stated differentiator — "CPCV + deflated Sharpe is what separates real edg
   - **Gate tightened 2026-08-25**: Sharpe alone can be satisfied by a book that is just long the market, so `_go_no_go` in `run_paper.py` now also requires benchmark-relative alpha `t ≥ 2.0` alongside PSR > 0.65, DD < 30%, and ≥ 50 active days
   - **Status at day 61 (2026-05-28 → 2026-08-24)**: combined Sharpe 3.46, return +9.5%, DD −1.8%; alpha vs equal-weight book **+36.7%/yr, t=1.52, beta=0.07, IR=3.22** — the book is close to market-neutral (so the naive +0.5% return-difference badly understates it), but the alpha is **not yet statistically significant**. At the current IR, t=2.0 arrives around paper day ~97 (≈38 more trading days)
 
+**Priority 4 — Cross-sectional ML model (Gu-Kelly-Xiu style, opened 2026-09-25):**
+
+One model over many characteristics instead of thousands of hand-written "quality × revision" variants. Reference: [Gu, Kelly & Xiu 2020](https://academic.oup.com/rfs/article/33/5/2223/5758276) — NN long-short decile OOS Sharpe 1.35 value-weighted / 2.45 equal-weighted, gross of costs, 1987–2016 test on ~30k CRSP stocks with 94 characteristics. Current `loop_data.parquet` (2018-01 → 2024-05, 2,550 tickers, 33 non-price columns, likely no delisted names — not verified) can't reproduce that; expect a lower, noisier Sharpe. Target: net Sharpe ~1 after 20 bps round-trip.
+
+- [ ] **Data**: survivorship-bias-free panel including delisted names — Sharadar SEP+SF1 (~1998 →, point-in-time filing dates) or WRDS/CRSP+Compustat if academic access is available; replaces `loop_data.parquet` for this strategy only
+- [ ] **Unfreeze fundamentals**: the FMP plan is Premium (750 calls/min), so the ~11k per-ticker calls blocking the frozen-fundamentals item above are no longer a constraint
+- [ ] **Features**: 50–100 characteristics built from the [Open Source Asset Pricing](https://www.openassetpricing.com/) published definitions (Chen & Zimmermann), plus existing macro columns
+- [ ] **Model**: LightGBM ranker on next-month return, retrained yearly on an expanding window (walk-forward, no look-ahead); wrapped as a single `Strategy` whose `predict()` emits decile weights
+- [ ] **Executor — long-only**: `SimExecutor._cap_weights` drops weights ≤ 0 (`autoalpha/core/executors.py:87`); either add short support or run long-only top decile (matches what the Alpaca paper account can run)
+- [ ] **Executor — rebalance cadence**: `execute()` trades every held name back to its target weight each bar, so a monthly strategy would pay drift-rebalancing costs daily; hold positions between rebalance dates
+- [ ] **Evaluation**: CPCV + cost model at 10–20 bps round-trip, then the existing holdout + forward promotion gate before paper
+- [ ] **Later**: LLM news-headline sentiment as one extra feature, not a standalone daily strategy — [Lopez-Lira & Tang](https://arxiv.org/abs/2304.07619) report Sharpe 2.97 gross, 1.29 at 10 bps, decaying to 1.22 by Jan–May 2024
+
 ## Phase 6 — Meta-Labeling & Live Deployment
 Goal: improve signal precision via a secondary filter, then graduate to live trading.
 
