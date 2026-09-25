@@ -29,8 +29,10 @@ class BacktestResult:
     dsr: float = 0.0
     max_drawdown: float = 0.0
     activity_rate: float = 0.0
-    returns: list[float] = field(default_factory=list)
+    returns: list[float] = field(default_factory=list)       # FF5 alpha residuals
     return_dates: list[str] = field(default_factory=list)
+    raw_returns: list[float] = field(default_factory=list)   # portfolio returns before residualizing
+    raw_return_dates: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
     @property
@@ -238,6 +240,8 @@ def _main():
         "active_days": active_days,
         "returns": daily.tolist(),
         "return_dates": alpha_series.index.strftime("%Y-%m-%d").tolist(),
+        "raw_returns": returns.tolist(),
+        "raw_return_dates": returns.index.strftime("%Y-%m-%d").tolist(),
         "error": None,
     }))
 
@@ -314,4 +318,6 @@ def _run_child(
         activity_rate=data.get("activity_rate", 0.0),
         returns=data.get("returns", []),
         return_dates=data.get("return_dates", []),
+        raw_returns=data.get("raw_returns", []),
+        raw_return_dates=data.get("raw_return_dates", []),
     )

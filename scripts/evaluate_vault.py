@@ -158,11 +158,14 @@ def main() -> None:
         if not result.succeeded:
             log.warning("  FAILED: %s", result.error[:120])
             continue
-        if not result.returns:
+        # Raw portfolio returns, not result.returns (FF5 residuals, whose factor
+        # exposure is already stripped). The child reads the whole vault file, so
+        # the holdout clamp above has to be re-applied to its output.
+        rets = pd.Series(result.raw_returns, index=pd.to_datetime(result.raw_return_dates), dtype=float)
+        rets = rets[rets.index <= pd.Timestamp(date_range[1])]
+        if rets.empty:
             log.warning("  Empty returns for %s", name)
             continue
-        idx = pd.to_datetime(result.return_dates)
-        rets = pd.Series(result.returns, index=idx)
         signal_returns[name] = rets
         log.info("  done: %d bars", len(rets))
 
