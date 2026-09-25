@@ -454,3 +454,27 @@ def test_normalize_targets_keeps_cash():
     from autoalpha.core.runner import _normalize_targets
     assert _normalize_targets({"A": 0.1, "B": 0.2}) == {"A": 0.1, "B": 0.2}   # 70% cash kept
     assert _normalize_targets({"A": 3.0, "B": 1.0, "C": -1.0}) == {"A": 0.75, "B": 0.25}
+
+
+def test_run_live_closes_positions_when_strategy_goes_flat():
+    """run_live must execute empty targets too, or exits never happen."""
+    from datetime import date
+    import pandas as pd
+    from autoalpha.core.runner import Runner
+    from autoalpha.core.strategy import Strategy
+    from autoalpha.core.executors import SimExecutor
+
+    class OneDay(Strategy):
+        def fit(self, data): pass
+        def predict(self, bar_data, bar_date=None):
+            return {"A": 0.5} if bar_date == pd.Timestamp("2024-01-02") else {}
+
+    class P:
+        def history(self, *a): return pd.DataFrame()
+        def bars(self, *a):
+            for d in pd.bdate_range("2024-01-02", periods=3):
+                yield d, pd.DataFrame({"Open": [100.0]}, index=["A"])
+
+    ex = SimExecutor(initial_capital=1000, cost_bps=0)
+    Runner(OneDay(), P(), ex, ["A"]).run_live(date(2024, 1, 1), date(2024, 1, 2))
+    assert ex._positions == {}

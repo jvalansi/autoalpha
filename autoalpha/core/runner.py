@@ -110,6 +110,6 @@ class Runner:
         prev_targets: dict[str, float] = {}
         for bar_date, bar_df in self._provider.bars(self._tickers, history_end, date.today()):
             open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
-            if prev_targets and open_prices:
+            if open_prices:  # also on empty targets, so exits close and NAV is recorded
                 self._executor.execute(prev_targets, bar_date, open_prices)
             prev_targets = _normalize_targets(self._strategy.predict(bar_df, bar_date=bar_date))

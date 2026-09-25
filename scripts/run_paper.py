@@ -308,7 +308,7 @@ def main() -> None:
         prev_targets: dict = {}
         for bar_date, bar_df in vault_provider.bars(tickers, paper_start_date, paper_end_date):
             open_prices = bar_df["Open"].to_dict() if "Open" in bar_df.columns else {}
-            if prev_targets and open_prices:
+            if open_prices:  # also on empty targets, so exits close and NAV is recorded
                 executor.execute(prev_targets, bar_date, open_prices)
             prev_targets = _normalize_targets(strategy.predict(bar_df, bar_date=pd.Timestamp(bar_date)))
 
