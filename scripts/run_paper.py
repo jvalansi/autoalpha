@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autoalpha.core.executors import SimExecutor
 from autoalpha.core.providers import HistoricalProvider
 from autoalpha.core.runner import Runner, _normalize_targets
-from autoalpha.evaluation.alpha import compute_benchmark_alpha, ff5_alpha_stats
+from autoalpha.evaluation.alpha import compute_benchmark_alpha, equal_weight_benchmark, ff5_alpha_stats
 from autoalpha.evaluation.library import SignalLibrary
 from autoalpha.research.code_validator import wrap_predict_body
 from autoalpha.research.memory import HypothesisMemory
@@ -276,13 +276,13 @@ def main() -> None:
     # fit() is a no-op for all generated strategies — no need to load loop_data
     vault_provider = make_parquet_provider(vault_mi)
 
-    # Benchmark: equal-weight all tickers, buy-and-hold over paper period
-    bm_close = pd.concat([
-        df["Close"].rename(d)
+    # Benchmark: equal-weight all tickers, open to open like the SimExecutor NAV
+    bm_open = pd.concat([
+        df["Open"].rename(d)
         for (d, df) in vault_provider.bars(tickers, paper_start_date, paper_end_date)
     ], axis=1).T  # shape: dates × tickers
-    if len(bm_close) >= 2:
-        bm_rets = bm_close.pct_change().dropna(how="all").mean(axis=1)  # skipna=True by default
+    if len(bm_open) >= 2:
+        bm_rets = equal_weight_benchmark(bm_open)
     else:
         bm_rets = pd.Series(dtype=float)
 

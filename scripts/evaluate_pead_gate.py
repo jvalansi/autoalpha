@@ -2,7 +2,7 @@
 
 Same evidence as scripts/promotion_status.py: holdout (vault_holdout.json window)
 and forward (paper_start → latest vault bar), each run with SimExecutor at 11 bps
-against the equal-weight benchmark, pooled into one alpha regression and judged
+against the open-to-open equal-weight benchmark, pooled into one alpha regression and judged
 by promotion_status.gate_verdict. Does not add PEAD to the signal library.
 
 Usage:
@@ -20,7 +20,7 @@ import pyarrow.dataset as ds
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from autoalpha.core.executors import SimExecutor
-from autoalpha.evaluation.alpha import compute_benchmark_alpha
+from autoalpha.evaluation.alpha import compute_benchmark_alpha, equal_weight_benchmark
 from autoalpha.strategies.pead_et import EarningsTraderPEAD
 from promotion_status import MIN_ALPHA_T, gate_verdict
 
@@ -46,8 +46,7 @@ def run(bars: dict[pd.Timestamp, pd.DataFrame]) -> tuple[pd.Series, pd.Series, i
         targets = strategy.predict(b, bar_date=d)
         entries += len(set(targets) - set(prev))
         prev = targets
-    closes = pd.DataFrame({d: b["Close"] for d, b in bars.items()}).T.sort_index()
-    benchmark = closes.pct_change(fill_method=None).iloc[1:].mean(axis=1)
+    benchmark = equal_weight_benchmark(pd.DataFrame({d: b["Open"] for d, b in bars.items()}).T)
     return executor.returns(), benchmark, entries
 
 

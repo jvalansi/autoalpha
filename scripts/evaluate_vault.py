@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from autoalpha.evaluation.alpha import compute_benchmark_alpha
+from autoalpha.evaluation.alpha import compute_benchmark_alpha, equal_weight_benchmark
 from autoalpha.research.code_validator import wrap_predict_body
 from autoalpha.research.subprocess_runner import run_strategy_subprocess
 
@@ -53,15 +53,13 @@ def _load_active_hypotheses(db_path: Path) -> list[dict]:
 
 
 def _benchmark_returns(vault_data: pd.DataFrame) -> pd.Series:
-    """Equal-weight daily returns across all tickers."""
-    prices = (
-        vault_data["Close"]
+    """Equal-weight daily returns across all tickers, open to open like SimExecutor."""
+    opens = (
+        vault_data["Open"]
         .groupby(level=["date", "ticker"]).last()  # deduplicate any duplicate index entries
         .unstack(level="ticker")
-        .sort_index()
     )
-    rets = prices.pct_change().dropna(how="all")
-    return rets.mean(axis=1).rename("benchmark")
+    return equal_weight_benchmark(opens)
 
 
 def _print_stats(label: str, returns: pd.Series) -> None:

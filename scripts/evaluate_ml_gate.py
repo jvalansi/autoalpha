@@ -5,8 +5,7 @@ through the promotion gate.
 2. Gate: fit on all loop data (2018-01 → 2024-05-20, pre-vault), then trade the
    holdout and forward windows exactly as scripts/evaluate_pead_gate.py does —
    SimExecutor at 11 bps, pooled alpha regression,
-   promotion_status.gate_verdict — except the equal-weight benchmark is open-to-open
-   (see run()). Hyperparameters are fixed in the strategy module
+   promotion_status.gate_verdict. Hyperparameters are fixed in the strategy module
    and were not tuned on either window.
 
 Usage:
@@ -25,7 +24,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from autoalpha.core.executors import SimExecutor
-from autoalpha.evaluation.alpha import compute_benchmark_alpha
+from autoalpha.evaluation.alpha import compute_benchmark_alpha, equal_weight_benchmark
 from autoalpha.strategies.ml_cross_section import FEATURES, MLCrossSection
 from evaluate_pead_gate import load_window, summarize
 from promotion_status import MIN_ALPHA_T, gate_verdict
@@ -45,11 +44,8 @@ def run(strategy: MLCrossSection, bars: Iterable[tuple[pd.Timestamp, pd.DataFram
         targets = strategy.predict(b, bar_date=d)
         entries += len(set(targets) - set(prev))
         prev = targets
-        opens[d] = b["Open"].where(b["Open"] > 0)  # loop data has zero prices
-    # Open-to-open, matching SimExecutor, which marks NAV at each bar's open. A
-    # close-to-close benchmark on the same date label overlaps only overnight, so
-    # beta collapses toward 0 and the market's return shows up as alpha.
-    benchmark = pd.DataFrame(opens).T.sort_index().pct_change(fill_method=None).iloc[1:].mean(axis=1)
+        opens[d] = b["Open"]
+    benchmark = equal_weight_benchmark(pd.DataFrame(opens).T)
     return executor.returns(), benchmark, entries
 
 

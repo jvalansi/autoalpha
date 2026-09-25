@@ -202,6 +202,19 @@ def ff5_alpha_stats(strategy_returns: pd.Series, min_overlap: int = 30) -> dict:
     }
 
 
+def equal_weight_benchmark(opens: pd.DataFrame) -> pd.Series:
+    """Equal-weight universe return, open to open. opens: dates × tickers.
+
+    SimExecutor marks NAV at each bar's open, so strategy returns dated d run from
+    open(d-1) to open(d). A close-to-close benchmark on the same date label overlaps
+    only the overnight gap: beta collapses toward 0 and the market's return is
+    booked as alpha. Non-positive prices are treated as missing.
+    """
+    opens = opens.sort_index()
+    rets = opens.where(opens > 0).pct_change(fill_method=None).iloc[1:]
+    return rets.mean(axis=1).dropna().rename("benchmark")
+
+
 def compute_benchmark_alpha(
     strategy_returns: pd.Series,
     benchmark_returns: pd.Series,
