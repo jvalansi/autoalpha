@@ -50,7 +50,8 @@ LIVE_DIR = Path("data/live")
 STATE_PATH = LIVE_DIR / "pead_state.json"
 ORDERS_LOG = LIVE_DIR / "pead_orders.jsonl"
 VAULT = Path("data/vault_data.parquet")
-ET_POSITIONS = Path("/home/ubuntu/earnings-trader/data/positions.json")
+COMPARE_LOG = LIVE_DIR / "pead_compare.jsonl"
+ET_DATA = Path("/home/ubuntu/earnings-trader/data")
 FMP_EARNINGS = "https://financialmodelingprep.com/stable/earnings"
 
 
@@ -63,6 +64,22 @@ def save_state(state: dict) -> None:
     tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2))
     tmp.rename(STATE_PATH)
+
+
+def earnings_trader_day(today: pd.Timestamp) -> dict:
+    """earnings-trader's book, today's fills and halt state, read from its data files."""
+    def read(name, default):
+        path = ET_DATA / name
+        return json.loads(path.read_text()) if path.exists() else default
+    trades = []
+    if (ET_DATA / "trades_log.jsonl").exists():
+        for line in (ET_DATA / "trades_log.jsonl").read_text().splitlines():
+            t = json.loads(line)
+            if pd.Timestamp(t["timestamp"]).tz_convert(ET).date() == today.date():
+                trades.append({k: t.get(k) for k in ("ticker", "action", "quantity", "fill_price", "status")})
+    risk = read("risk_state.json", {})
+    return {"holding": sorted(p["ticker"] for p in read("positions.json", [])), "trades": trades,
+            "halted_since": risk.get("halted_since"), "halt_reasons": risk.get("halt_reasons", [])}
 
 
 def universe_sectors() -> dict[str, str]:
@@ -211,6 +228,7 @@ def main() -> None:
     exits = [t for t in state["positions"] if t not in targets]
     executor.execute(targets, today.date(), prices)
 
+    et = earnings_trader_day(today)
     kept = strategy.state()
     state["positions"] = {
         t: {**state["positions"].get(t, {"entry_date": str(today.date()), "entry_price": prices.get(t)}),
@@ -223,13 +241,23 @@ def main() -> None:
             for o in executor.orders():
                 f.write(json.dumps({"date": str(today.date()), **{k: o.get(k) for k in ("symbol", "qty", "side", "price")},
                                     "order_id": (o.get("response") or {}).get("id")}) + "\n")
+        with COMPARE_LOG.open("a") as f:
+            f.write(json.dumps({
+                "date": str(today.date()),
+                "autoalpha": {"candidates": json.loads(cand.to_json(orient="index")), "entries": new,
+                              "exits": exits, "holding": sorted(targets), "fills": [
+                                  {k: o.get(k) for k in ("symbol", "qty", "side", "price")} for o in executor.orders()]},
+                "earnings_trader": et}) + "\n")
 
-    et_book = sorted(p["ticker"] for p in json.loads(ET_POSITIONS.read_text())) if ET_POSITIONS.exists() else []
+    et_trades = ", ".join(f"{t['action']} {t['ticker']}" for t in et["trades"]) or "none"
+    et_halt = f" | ⛔ halted since {et['halted_since'][:10]}: {'; '.join(et['halt_reasons'])}" if et["halted_since"] else ""
     lines = [f"**autoalpha live PEAD — {today.date()}**{' (dry run)' if args.dry_run else ''}", risk.line(),
              f"Candidates reacting today: {len(rx)} | entries: {', '.join(new) or 'none'} | "
              f"exits: {', '.join(exits) or 'none'}",
              f"Holding ({len(targets)}/{MAX_POSITIONS}): {', '.join(sorted(targets)) or 'none'}",
-             f"earnings-trader holding: {', '.join(et_book) or 'none'}", *notes]
+             f"earnings-trader holding: {', '.join(et['holding']) or 'none'} | "
+             f"trades today: {et_trades}{et_halt}",
+             *notes]
     msg = "\n".join(lines)
     log.info("\n%s", msg)
     if not args.dry_run and os.environ.get("DISCORD_BOT_TOKEN"):
