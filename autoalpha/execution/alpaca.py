@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 LIVE_BASE_URL = "https://api.alpaca.markets"
+DATA_BASE_URL = "https://data.alpaca.markets"
 
 
 class BrokerError(RuntimeError):
@@ -93,14 +94,14 @@ class AlpacaExecutor(LiveExecutor):
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _request(self, method: str, path: str, base_url: Optional[str] = None, **kwargs: Any) -> Any:
         """Call the Alpaca API, retrying transient failures with backoff.
 
         4xx responses are the broker rejecting us (bad symbol, insufficient
         buying power, market not accepting opg orders) — retrying those just
         repeats the rejection, so they raise immediately.
         """
-        url = f"{self._base_url}{path}"
+        url = f"{base_url or self._base_url}{path}"
         last_exc: Exception | None = None
 
         for attempt in range(self._max_retries):
@@ -141,6 +142,16 @@ class AlpacaExecutor(LiveExecutor):
     def current_positions(self) -> dict[str, float]:
         positions = self._request("GET", "/v2/positions")
         return {p["symbol"]: float(p["qty"]) for p in positions}
+
+    def snapshots(self, symbols: list[str]) -> dict[str, dict]:
+        """Market-data snapshots (latestTrade, dailyBar, prevDailyBar, ...) keyed by symbol.
+
+        Uses the account's default feed (IEX on the free plan)."""
+        out: dict[str, dict] = {}
+        for i in range(0, len(symbols), 200):
+            out.update(self._request("GET", "/v2/stocks/snapshots", base_url=DATA_BASE_URL,
+                                     params={"symbols": ",".join(symbols[i:i + 200])}) or {})
+        return {s: v for s, v in out.items() if v}
 
     def _place_order(self, symbol: str, qty: float, side: str) -> dict:
         payload = {

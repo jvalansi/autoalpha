@@ -110,9 +110,16 @@ def surprise(ticker: str, report_date: pd.Timestamp, api_key: str) -> tuple[floa
     return np.nan, np.nan
 
 
-def daily_bars(symbols: list[str], today: pd.Timestamp) -> dict[str, pd.DataFrame]:
+def daily_bars(symbols: list[str], today: pd.Timestamp, executor: AlpacaExecutor) -> dict[str, pd.DataFrame]:
+    """Completed daily bars from yfinance plus today's bar from Alpaca snapshots.
+
+    yfinance's same-day row is unreliable in the first minutes of the session: on
+    2026-09-29 at 9:31 its KMX row still carried 9/28's open (57.17 vs a 60.41 open),
+    so the gap filter saw +1.1% instead of +6.8%. Today's bar comes from Alpaca's
+    snapshot instead: dailyBar once it is dated today, else the last trade."""
     raw = yf.download(" ".join(symbols), period="3mo", interval="1d", auto_adjust=True,
                       progress=False, group_by="ticker", threads=True)
+    snaps = executor.snapshots(symbols)
     out = {}
     for s in symbols:
         try:
@@ -120,9 +127,23 @@ def daily_bars(symbols: list[str], today: pd.Timestamp) -> dict[str, pd.DataFram
         except KeyError:
             continue
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-        if len(df) > ATR_PERIOD + 11 and df.index[-1] == today:  # today's (partial) bar must exist
-            out[s] = df
+        now = today_bar(snaps.get(s) or {}, today)
+        if now is None or len(df[df.index < today]) <= ATR_PERIOD + 11:
+            continue
+        out[s] = pd.concat([df.loc[df.index < today, ["Open", "High", "Low", "Close"]],
+                            pd.DataFrame([now], index=[today])])
     return out
+
+
+def today_bar(snap: dict, today: pd.Timestamp) -> dict | None:
+    """Today's OHLC from an Alpaca snapshot; Close is the last trade."""
+    last = (snap.get("latestTrade") or {}).get("p")
+    if not last:
+        return None
+    bar = snap.get("dailyBar") or {}
+    if bar.get("t") and pd.Timestamp(bar["t"]).tz_convert(ET).date() == today.date():
+        return {"Open": bar["o"], "High": max(bar["h"], last), "Low": min(bar["l"], last), "Close": last}
+    return {"Open": last, "High": last, "Low": last, "Close": last}
 
 
 def features(tickers: list[str], bars: dict[str, pd.DataFrame], sectors: dict[str, str]) -> pd.DataFrame:
@@ -194,7 +215,7 @@ def main() -> None:
     rx = rx[rx["ticker"].isin(sectors)]
     held = list(state["positions"])
     etfs = sorted(set(SECTOR_ETF_MAP.values()) | {FALLBACK_ETF})
-    bars = daily_bars(sorted(set(rx["ticker"]) | set(held) | set(broker) | set(etfs)), today)
+    bars = daily_bars(sorted(set(rx["ticker"]) | set(held) | set(broker) | set(etfs)), today, executor)
     feat = features(sorted(set(rx["ticker"]) | set(held)), bars, sectors)
 
     feat["days_since_earnings"] = np.nan
