@@ -33,6 +33,26 @@ LIVE_BASE_URL = "https://api.alpaca.markets"
 DATA_BASE_URL = "https://data.alpaca.markets"
 
 
+def to_alpaca(symbol: str) -> str:
+    """yfinance ticker → Alpaca symbol: BRK-B → BRK.B, CTA-PA (preferred) → CTA.PRA."""
+    base, sep, suffix = symbol.partition("-")
+    if not sep:
+        return symbol
+    if len(suffix) == 2 and suffix[0] == "P":
+        return f"{base}.PR{suffix[1]}"
+    return f"{base}.{suffix}"
+
+
+def from_alpaca(symbol: str) -> str:
+    """Alpaca symbol → yfinance ticker (inverse of to_alpaca)."""
+    base, sep, suffix = symbol.partition(".")
+    if not sep:
+        return symbol
+    if len(suffix) == 3 and suffix.startswith("PR"):
+        return f"{base}-P{suffix[2]}"
+    return f"{base}-{suffix}"
+
+
 class BrokerError(RuntimeError):
     """Raised when the broker API fails after retries, or rejects a request."""
 
@@ -141,21 +161,22 @@ class AlpacaExecutor(LiveExecutor):
 
     def current_positions(self) -> dict[str, float]:
         positions = self._request("GET", "/v2/positions")
-        return {p["symbol"]: float(p["qty"]) for p in positions}
+        return {from_alpaca(p["symbol"]): float(p["qty"]) for p in positions}
 
     def snapshots(self, symbols: list[str]) -> dict[str, dict]:
         """Market-data snapshots (latestTrade, dailyBar, prevDailyBar, ...) keyed by symbol.
 
         Uses the account's default feed (IEX on the free plan)."""
         out: dict[str, dict] = {}
-        for i in range(0, len(symbols), 200):
+        alpaca = [to_alpaca(s) for s in symbols]
+        for i in range(0, len(alpaca), 200):
             out.update(self._request("GET", "/v2/stocks/snapshots", base_url=DATA_BASE_URL,
-                                     params={"symbols": ",".join(symbols[i:i + 200])}) or {})
-        return {s: v for s, v in out.items() if v}
+                                     params={"symbols": ",".join(alpaca[i:i + 200])}) or {})
+        return {from_alpaca(s): v for s, v in out.items() if v}
 
     def _place_order(self, symbol: str, qty: float, side: str) -> dict:
         payload = {
-            "symbol": symbol,
+            "symbol": to_alpaca(symbol),
             "qty": str(qty if self._allow_fractional else int(qty)),
             "side": side,
             "type": "market",

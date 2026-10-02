@@ -301,6 +301,14 @@ class TestAlpacaExecutor:
             "type": "market", "time_in_force": "opg",
         }
 
+    def test_symbols_map_between_yfinance_and_alpaca(self):
+        # 2026-10-01: MKC-V in a snapshot request → 400 "invalid symbol", crashing the run
+        from autoalpha.execution.alpaca import from_alpaca, to_alpaca
+        pairs = {"AAPL": "AAPL", "MKC-V": "MKC.V", "BRK-B": "BRK.B", "CTA-PA": "CTA.PRA"}
+        for yf_sym, alpaca_sym in pairs.items():
+            assert to_alpaca(yf_sym) == alpaca_sym
+            assert from_alpaca(alpaca_sym) == yf_sym
+
 
 # ---------------------------------------------------------------------------
 # evaluation/library.py — sync + idempotence
