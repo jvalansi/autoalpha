@@ -165,7 +165,8 @@ def features(tickers: list[str], bars: dict[str, pd.DataFrame], sectors: dict[st
             "sector_ret_1d": (etf["Close"].iloc[-1] / etf["Close"].iloc[-2] - 1) if etf is not None else np.nan,
             "atr_14": float(tr.ewm(alpha=1 / ATR_PERIOD, adjust=False).mean().iloc[-1]),
         }
-    return pd.DataFrame.from_dict(rows, orient="index")
+    cols = ["Open", "High", "Low", "Close", "gap_1d", "ret_1d", "ret_10d", "sector_ret_1d", "atr_14"]
+    return pd.DataFrame.from_dict(rows, orient="index", columns=cols)  # keep columns on no-candidate days
 
 
 def main() -> None:
@@ -218,7 +219,7 @@ def main() -> None:
     bars = daily_bars(sorted(set(rx["ticker"]) | set(held) | set(broker) | set(etfs)), today, executor)
     feat = features(sorted(set(rx["ticker"]) | set(held)), bars, sectors)
 
-    feat["days_since_earnings"] = np.nan
+    feat[["days_since_earnings", "earnings_surprise", "revenue_surprise"]] = np.nan
     for _, r in rx.iterrows():
         if r["ticker"] in feat.index:
             eps, rev = surprise(r["ticker"], r["date"], api_key)
