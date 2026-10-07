@@ -233,7 +233,8 @@ def main() -> None:
 
     strategy = EarningsTraderPEAD()
     strategy.load_state({t: {"stop": p["stop"], "days": p["days"]} for t, p in state["positions"].items()})
-    targets = strategy.predict(feat, bar_date=today)
+    # No candidates and nothing held → empty frame without bar columns (crashed 2026-10-05)
+    targets = {} if feat.empty and not state["positions"] else strategy.predict(feat, bar_date=today)
     new = [t for t in targets if t not in state["positions"]]
     if new and not risk.entries_allowed:
         notes.append(f"entries blocked: {', '.join(new)}")
