@@ -194,6 +194,23 @@ class TestLiveExecutor:
         broker.impl.execute({"AAPL": 0.05}, date(2026, 1, 5), {"AAPL": 100.0})
         assert broker.impl.placed == [("AAPL", 30.0, "sell")]
 
+    def test_hold_leaves_position_untouched(self):
+        # Equity moved either way since the weight was set: a held name gets no order
+        for equity in (99_000, 101_000):
+            broker = FakeBroker(equity=equity, positions={"AAPL": 50.0})
+            broker.impl.execute({"AAPL": 0.05}, date(2026, 1, 5), {"AAPL": 100.0}, hold=frozenset({"AAPL"}))
+            assert broker.impl.placed == []
+
+    def test_hold_sizes_a_name_that_is_flat_at_the_broker(self):
+        broker = FakeBroker(equity=100_000)
+        broker.impl.execute({"AAPL": 0.05}, date(2026, 1, 5), {"AAPL": 100.0}, hold=frozenset({"AAPL"}))
+        assert broker.impl.placed == [("AAPL", 50.0, "buy")]
+
+    def test_hold_still_closes_when_dropped_from_targets(self):
+        broker = FakeBroker(equity=100_000, positions={"AAPL": 50.0})
+        broker.impl.execute({}, date(2026, 1, 5), {"AAPL": 100.0}, hold=frozenset({"AAPL"}))
+        assert broker.impl.placed == [("AAPL", 50.0, "sell")]
+
     def test_skips_sub_one_share_delta(self):
         broker = FakeBroker(equity=100_000, positions={"AAPL": 50.0})
         broker.impl.execute({"AAPL": 0.0505}, date(2026, 1, 5), {"AAPL": 100.0})

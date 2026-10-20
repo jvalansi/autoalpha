@@ -200,7 +200,8 @@ class AlpacaExecutor(LiveExecutor):
     def market_is_open(self) -> bool:
         return bool(self._request("GET", "/v2/clock").get("is_open"))
 
-    def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float]) -> None:
+    def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float],
+                hold: frozenset[str] = frozenset()) -> None:
         # Reconcile against a clean order book so we never stack duplicate opg orders.
         self.cancel_open_orders()
-        super().execute(targets, bar_date, prices)
+        super().execute(targets, bar_date, prices, hold)

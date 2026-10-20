@@ -146,17 +146,6 @@ def today_bar(snap: dict, today: pd.Timestamp) -> dict | None:
     return {"Open": last, "High": last, "Low": last, "Close": last}
 
 
-def hold_weight(shares: float, price: float, equity: float) -> float:
-    """Target weight that keeps a held position's whole shares unchanged.
-
-    The executor re-reads account equity and floors shares, so the exact weight
-    (shares * price / equity) lands a hair under `shares` whenever equity ticks up
-    between the two reads — 2026-10-12 sold 1 share of LW and NEOG. Aim half a
-    share above so the floor returns `shares` for any equity drift under that.
-    """
-    return (shares + 0.5) * price / equity
-
-
 def features(tickers: list[str], bars: dict[str, pd.DataFrame], sectors: dict[str, str]) -> pd.DataFrame:
     rows = {}
     for t in tickers:
@@ -254,13 +243,12 @@ def main() -> None:
         strategy.load_state({t: p for t, p in strategy.state().items() if t not in new})
         new = []
 
-    # Held positions keep their shares: target their current weight so no order is sent
+    # Held positions keep their shares: the executor sends no order for them. Re-sizing
+    # through a weight resized them whenever equity moved between reads (2026-10-12 sold
+    # 1 LW and 1 NEOG, 2026-10-20 bought 1 NEOG).
     prices = {t: float(bars[t]["Close"].iloc[-1]) for t in set(targets) | set(broker) if t in bars}
-    for t in targets:
-        if t in broker and t in prices:
-            targets[t] = hold_weight(broker[t], prices[t], equity)
     exits = [t for t in state["positions"] if t not in targets]
-    executor.execute(targets, today.date(), prices)
+    executor.execute(targets, today.date(), prices, hold=frozenset(t for t in targets if t in state["positions"]))
 
     et = earnings_trader_day(today)
     kept = strategy.state()

@@ -228,7 +228,10 @@ class LiveExecutor(Executor):
         shares = (frac * self._overlay * equity) / price
         return shares if self._allow_fractional else float(int(shares))
 
-    def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float]) -> None:
+    def execute(self, targets: dict[str, float], bar_date: date, prices: dict[str, float],
+                hold: frozenset[str] = frozenset()) -> None:
+        """`hold`: symbols to leave exactly as held while they stay in `targets` (no resize).
+        Absent from `targets`, they are still closed; flat at the broker, they are sized."""
         equity = self.account_equity()
         self._nav_history[bar_date] = equity
 
@@ -245,6 +248,9 @@ class LiveExecutor(Executor):
                 # Closing needs no price: qty is whatever we hold.
                 if held != 0:
                     self._order(symbol, abs(held), "sell" if held > 0 else "buy", price)
+                continue
+
+            if symbol in hold and held != 0:
                 continue
 
             if price is None or price <= 0:
