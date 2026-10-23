@@ -12,7 +12,9 @@ BMO reports today), filled as same-session market orders.
   - Reconciliation: the broker is the system of record for holdings. Positions in
     state but not at the broker are dropped; broker positions the strategy doesn't
     hold are closed (the account is dedicated to this runner).
-  - Universe: tickers in data/vault_data.parquet (the universe the gate evaluated).
+  - Universe: every actively traded NYSE/NASDAQ/AMEX stock (FMP screener, no ETFs or
+    funds), like earnings-trader's scan; the backtest universe (data/vault_data.parquet)
+    missed names it traded (WASH 2026-10-20, SPCX 2026-10-21).
   - Held positions keep their share count (no daily rebalance), like earnings-trader.
 
 Usage:
@@ -24,15 +26,16 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 import requests
 import yfinance as yf
 
@@ -49,10 +52,12 @@ ET = ZoneInfo("America/New_York")
 LIVE_DIR = Path("data/live")
 STATE_PATH = LIVE_DIR / "pead_state.json"
 ORDERS_LOG = LIVE_DIR / "pead_orders.jsonl"
-VAULT = Path("data/vault_data.parquet")
 COMPARE_LOG = LIVE_DIR / "pead_compare.jsonl"
+UNIVERSE_CACHE = LIVE_DIR / "universe_sectors.json"
 ET_DATA = Path("/home/ubuntu/earnings-trader/data")
 FMP_EARNINGS = "https://financialmodelingprep.com/stable/earnings"
+FMP_SCREENER = "https://financialmodelingprep.com/stable/company-screener"
+FMP_QUOTES = "https://financialmodelingprep.com/stable/batch-quote"
 
 
 def load_state() -> dict:
@@ -82,9 +87,55 @@ def earnings_trader_day(today: pd.Timestamp) -> dict:
             "halted_since": risk.get("halted_since"), "halt_reasons": risk.get("halt_reasons", [])}
 
 
-def universe_sectors() -> dict[str, str]:
-    t = pq.read_table(VAULT, columns=["date", "ticker", "sector"]).to_pandas().reset_index()
-    return t.sort_values("date").drop_duplicates("ticker", keep="last").set_index("ticker")["sector"].to_dict()
+def fmp_get(url: str, params: dict, timeout: float = 30, tries: int = 3) -> list:
+    """GET an FMP endpoint that returns a JSON list, retrying 5xx/429/network errors.
+
+    Errors name the endpoint only — requests' own messages include the apikey."""
+    for attempt in range(tries):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            err = f"{type(e).__name__}"
+        else:
+            if resp.status_code < 400:
+                body = resp.json()
+                if isinstance(body, list):
+                    return body
+                raise RuntimeError(f"FMP {url}: unexpected response {str(body)[:200]}")
+            err = f"HTTP {resp.status_code}"
+            if resp.status_code < 500 and resp.status_code != 429:
+                break
+        if attempt + 1 < tries:
+            time.sleep(2 ** attempt)
+    raise RuntimeError(f"FMP {url}: {err}")
+
+
+def redact(e: Exception) -> str:
+    """Exception text safe for logs/Discord — requests errors embed the FMP apikey."""
+    return re.sub(r"apikey=[^&\s]+", "apikey=***", str(e))
+
+
+def universe_sectors(api_key: str) -> tuple[dict[str, str], str | None]:
+    """Ticker -> sector for actively traded US-listed stocks (no ETFs/funds), plus a
+    note when the last good screener result had to be used instead."""
+    limit = 20000
+    try:
+        rows = fmp_get(FMP_SCREENER, timeout=60, params={
+            "exchange": "NYSE,NASDAQ,AMEX", "isEtf": "false", "isFund": "false",
+            "isActivelyTrading": "true", "limit": limit, "apikey": api_key})
+        sectors = {r["symbol"]: r.get("sector") or "" for r in rows}
+        if not 1000 <= len(sectors) < limit:  # truncated or capped → universe silently wrong
+            raise RuntimeError(f"FMP screener returned {len(sectors)} stocks")
+    except Exception as e:
+        if not UNIVERSE_CACHE.exists():
+            raise
+        age = (datetime.now().timestamp() - UNIVERSE_CACHE.stat().st_mtime) / 86400
+        return json.loads(UNIVERSE_CACHE.read_text()), f"screener failed ({redact(e)}) — using {age:.0f}-day-old universe"
+    LIVE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = UNIVERSE_CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sectors))
+    tmp.rename(UNIVERSE_CACHE)
+    return sectors, None
 
 
 def reacting_today(today: pd.Timestamp, trading_days: pd.DatetimeIndex, api_key: str) -> pd.DataFrame:
@@ -110,16 +161,28 @@ def surprise(ticker: str, report_date: pd.Timestamp, api_key: str) -> tuple[floa
     return np.nan, np.nan
 
 
-def daily_bars(symbols: list[str], today: pd.Timestamp, executor: AlpacaExecutor) -> dict[str, pd.DataFrame]:
-    """Completed daily bars from yfinance plus today's bar from Alpaca snapshots.
+def fmp_quotes(symbols: list[str], api_key: str) -> dict[str, dict]:
+    out = {}
+    for i in range(0, len(symbols), 100):
+        out.update({q["symbol"]: q for q in fmp_get(FMP_QUOTES, {"symbols": ",".join(symbols[i:i + 100]),
+                                                                 "apikey": api_key}) or []})
+    return out
 
-    yfinance's same-day row is unreliable in the first minutes of the session: on
-    2026-09-29 at 9:31 its KMX row still carried 9/28's open (57.17 vs a 60.41 open),
-    so the gap filter saw +1.1% instead of +6.8%. Today's bar comes from Alpaca's
-    snapshot instead: dailyBar once it is dated today, else the last trade."""
-    raw = yf.download(" ".join(symbols), period="3mo", interval="1d", auto_adjust=True,
+
+def daily_bars(symbols: list[str], today: pd.Timestamp, quotes: dict[str, dict],
+               price_only: set[str] = frozenset()) -> dict[str, pd.DataFrame]:
+    """Completed daily bars from yfinance plus today's bar from FMP's consolidated quote.
+
+    yfinance's same-day row can still carry the previous session's open at 9:31
+    (2026-09-29 KMX: +1.1% gap read vs +6.8% real), and Alpaca's free IEX snapshot can
+    have no trade yet for thinner names (2026-10-22 LNN: -0.3% read vs +4.9% real).
+    History is dividend-adjusted (as in the backtest and earnings-trader); the quote is
+    checked against the unadjusted closes, which is what FMP's previousClose reports.
+
+    `price_only` symbols (held positions) whose quote is on today's session but has no
+    usable open still get a bar at the last price, so stops and the 10-day exit run."""
+    raw = yf.download(" ".join(symbols), period="3mo", interval="1d", auto_adjust=False,
                       progress=False, group_by="ticker", threads=True)
-    snaps = executor.snapshots(symbols)
     out = {}
     for s in symbols:
         try:
@@ -127,23 +190,49 @@ def daily_bars(symbols: list[str], today: pd.Timestamp, executor: AlpacaExecutor
         except KeyError:
             continue
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-        now = today_bar(snaps.get(s) or {}, today)
-        if now is None or len(df[df.index < today]) <= ATR_PERIOD + 11:
+        df = df[df.index < today].dropna(subset=["Open", "High", "Low", "Close", "Adj Close"])
+        if len(df) <= ATR_PERIOD + 11:
             continue
-        out[s] = pd.concat([df.loc[df.index < today, ["Open", "High", "Low", "Close"]],
-                            pd.DataFrame([now], index=[today])])
+        q = quotes.get(s)
+        now = today_bar(q, df["Close"].iloc[-2:].tolist(), float(df["Open"].iloc[-1]), today)
+        if now is None and s in price_only and on_today_session(q, df["Close"].iloc[-2:].tolist(),
+                                                                 float(df["Open"].iloc[-1]), today):
+            now = dict.fromkeys(["Open", "High", "Low", "Close"], float(q["price"]))
+        if now is None:
+            log.warning("%s: no usable quote for today's session — skipped", s)
+            continue
+        hist = df[["Open", "High", "Low", "Close"]].mul(df["Adj Close"] / df["Close"], axis=0)
+        out[s] = pd.concat([hist, pd.DataFrame([now], index=[today])])
     return out
 
 
-def today_bar(snap: dict, today: pd.Timestamp) -> dict | None:
-    """Today's OHLC from an Alpaca snapshot; Close is the last trade."""
-    last = (snap.get("latestTrade") or {}).get("p")
-    if not last:
+def on_today_session(quote: dict | None, last_closes: list[float], last_open: float,
+                     today: pd.Timestamp) -> bool:
+    """Is this FMP quote from today's session?
+
+    `last_closes` = unadjusted [day-before-yesterday's, yesterday's] close, `last_open` =
+    yesterday's open. A quote still on yesterday's session is stamped today at 9:31 but
+    reports the day before as previousClose and yesterday's open as its open."""
+    if not quote or not quote.get("price") or not quote.get("previousClose") or not quote.get("timestamp"):
+        return False
+    if pd.Timestamp(quote["timestamp"], unit="s", tz="UTC").tz_convert(ET).date() != today.date():
+        return False
+    pc, (c2, c1) = float(quote["previousClose"]), last_closes
+    if c1 != c2:
+        return abs(pc - c1) < abs(pc - c2)
+    return not quote.get("open") or float(quote["open"]) != last_open  # flat two days: fall back on the open
+
+
+def today_bar(quote: dict | None, last_closes: list[float], last_open: float,
+              today: pd.Timestamp) -> dict | None:
+    """Today's OHLC from an FMP quote (Close = last price), or None if it isn't usable."""
+    if not on_today_session(quote, last_closes, last_open, today) or not quote.get("open"):
         return None
-    bar = snap.get("dailyBar") or {}
-    if bar.get("t") and pd.Timestamp(bar["t"]).tz_convert(ET).date() == today.date():
-        return {"Open": bar["o"], "High": max(bar["h"], last), "Low": min(bar["l"], last), "Close": last}
-    return {"Open": last, "High": last, "Low": last, "Close": last}
+    if abs(float(quote["previousClose"]) / last_closes[-1] - 1) > 0.05:  # bad print / corporate action
+        return None
+    price, open_ = float(quote["price"]), float(quote["open"])
+    return {"Open": open_, "High": max(float(quote.get("dayHigh") or price), price, open_),
+            "Low": min(float(quote.get("dayLow") or price), price, open_), "Close": price}
 
 
 def features(tickers: list[str], bars: dict[str, pd.DataFrame], sectors: dict[str, str]) -> pd.DataFrame:
@@ -211,12 +300,25 @@ def main() -> None:
     guard_dir = Path(os.environ.get("TMPDIR", "/tmp")) if args.dry_run else LIVE_DIR
     risk = RiskGuard(guard_dir / "pead_risk_state.json", LIVE_DIR / "HALT").evaluate(equity, str(today.date()))
 
-    sectors = universe_sectors()
-    rx = reacting_today(today, trading_days, api_key)
-    rx = rx[rx["ticker"].isin(sectors)]
+    # FMP failures cost the day's entries, never the exits on what's already held
+    try:
+        sectors, note = universe_sectors(api_key)
+        notes += [note] if note else []
+        rx = reacting_today(today, trading_days, api_key)
+        rx = rx[rx["ticker"].isin(sectors)]
+    except Exception as e:
+        notes.append(f"no entries today — earnings scan failed: {redact(e)}")
+        sectors, rx = {}, pd.DataFrame(columns=["ticker", "date", "time"])
     held = list(state["positions"])
     etfs = sorted(set(SECTOR_ETF_MAP.values()) | {FALLBACK_ETF})
-    bars = daily_bars(sorted(set(rx["ticker"]) | set(held) | set(broker) | set(etfs)), today, executor)
+    symbols = sorted(set(rx["ticker"]) | set(held) | set(broker) | set(etfs))
+    try:
+        quotes = fmp_quotes(symbols, api_key)
+    except Exception as e:
+        notes.append(f"FMP quotes failed: {redact(e)}")
+        quotes = {}
+    bars = daily_bars(symbols, today, quotes, price_only=set(held))
+    notes += [f"{t}: no price today — stop and 10-day exit not checked" for t in held if t not in bars]
     feat = features(sorted(set(rx["ticker"]) | set(held)), bars, sectors)
 
     feat[["days_since_earnings", "earnings_surprise", "revenue_surprise"]] = np.nan
