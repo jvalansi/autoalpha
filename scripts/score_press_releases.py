@@ -127,7 +127,8 @@ def build_sec(model: str) -> None:
     lines = [_request(r.ticker, r.date, f"[{r.accepted:%Y-%m-%d %H:%M} ET] Form 8-K exhibit 99 (earnings release)\n{r.text}",
                       model) for r in rel.itertuples()]
     kept = rel[["ticker", "date", "accession", "accepted"]].to_dict("records")
-    _write_requests(lines, kept, len(rel))
+    n_events = json.loads((DIR / "candidates.json").read_text())["events"]  # all reaction bars, incl. no CIK
+    _write_requests(lines, kept, n_events)
 
 
 def _write_requests(lines: list[str], kept: list[dict], n_events: int) -> None:

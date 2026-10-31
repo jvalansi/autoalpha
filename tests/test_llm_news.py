@@ -48,3 +48,15 @@ def test_outcomes_are_abnormal_open_to_open_over_horizon(monkeypatch):
     assert pd.isna(out.loc[("A", dates[3]), "drift0"])
     # intraday: A +1% open->close vs benchmark mean (+1%, 0%) = 0.5%; first bar has no prior close -> NaN bench
     assert round(out.loc[("A", dates[1]), "intraday"], 6) == 0.005
+
+
+def test_sec_window_uses_et_close_to_open():
+    import fetch_sec_releases as fs
+    subs = pd.DataFrame({"accession": ["intraday", "after_close", "pre_open", "at_open"],
+                         "accepted": fs.parse_accepted(pd.Series([
+                             "2024-01-31T17:00:00.000Z",    # 12:00 ET on the previous bar: priced, out
+                             "2024-01-31T21:05:00.000Z",    # 16:05 ET: in
+                             "2024-02-01T13:00:00.000Z",    # 08:00 ET: in
+                             "2024-02-01T14:30:00.000Z"]))})  # 09:30 ET: out
+    got = fs.filings_in_window(subs, pd.Timestamp("2024-01-31"), pd.Timestamp("2024-02-01"))
+    assert got == ["pre_open", "after_close"]

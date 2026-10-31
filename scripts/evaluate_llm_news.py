@@ -170,10 +170,10 @@ def main() -> None:
         f"score >= 3 mean > {COST:.2%} with t >= {MIN_T} ({m:.2%}, t {mt:+.2f}, n {n})": m > COST and mt >= MIN_T,
     }
     hi, lo = pead.loc[pead["score"] >= 3, "drift0"], pead.loc[pead["score"] < 3, "drift0"]
+    vt = welch_t(hi, lo)
     veto = {
         f"PEAD-like score < 3 mean < 0 ({lo.mean():+.2%}, n {lo.notna().sum()})": lo.mean() < 0,
-        f"PEAD-like score >= 3 minus < 3, Welch t >= {MIN_T} "
-        f"({hi.mean() - lo.mean():+.2%}, t {welch_t(hi, lo):+.2f})": welch_t(hi, lo) >= MIN_T,
+        f"PEAD-like score >= 3 minus < 3, Welch t >= {MIN_T} ({hi.mean() - lo.mean():+.2%}, t {vt:+.2f})": vt >= MIN_T,
     }
     gates = [("first-run gate (drift0)", checks), ("veto gate (drift0)", veto)]
     if args.source == "sec":

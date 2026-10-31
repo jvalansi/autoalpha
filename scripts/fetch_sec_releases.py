@@ -72,7 +72,7 @@ def sec_get(url: str) -> requests.Response:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     tmp.write_text(text)
     tmp.rename(path)
 
@@ -112,9 +112,22 @@ def submissions(cik: int, since: str) -> pd.DataFrame:
                     rows.append({"accession": acc, "accepted": accepted})
         _atomic_write(path, json.dumps(rows))
     df = pd.DataFrame(rows, columns=["accession", "accepted"])
-    df["accepted"] = (pd.to_datetime(df["accepted"], utc=True, errors="coerce")
-                      .dt.tz_convert("America/New_York").dt.tz_localize(None))
+    df["accepted"] = parse_accepted(df["accepted"])
     return df.dropna()
+
+
+def parse_accepted(s: pd.Series) -> pd.Series:
+    """EDGAR acceptanceDateTime (UTC, '...Z') -> naive America/New_York time."""
+    return (pd.to_datetime(s, utc=True, errors="coerce")
+            .dt.tz_convert("America/New_York").dt.tz_localize(None))
+
+
+def filings_in_window(subs: pd.DataFrame, prev_date: pd.Timestamp, date: pd.Timestamp) -> list[str]:
+    """Accessions accepted after the previous bar's 16:00 ET close and before the
+    reaction bar's 09:30 ET open, latest first."""
+    lo, hi = prev_date + pd.Timedelta(hours=16), date + pd.Timedelta(hours=9, minutes=30)
+    hits = subs[(subs["accepted"] >= lo) & (subs["accepted"] < hi)].sort_values("accepted", ascending=False)
+    return hits["accession"].tolist()
 
 
 def release_text(cik: int, accession: str) -> str:
@@ -134,20 +147,24 @@ def release_text(cik: int, accession: str) -> str:
     return text
 
 
-def fetch_ticker(ticker: str, cik: int, evs: pd.DataFrame, since: str) -> list[dict]:
+def fetch_cik(cik: int, evs: pd.DataFrame, since: str) -> tuple[list[dict], int]:
+    """Releases for one company's events; returns (rows, number of events whose fetch failed)."""
     subs = submissions(cik, since)
-    out = []
+    accepted = dict(zip(subs["accession"], subs["accepted"]))
+    out, failed = [], 0
     for ev in evs.itertuples():
-        lo, hi = ev.prev_date + pd.Timedelta(hours=16), ev.date + pd.Timedelta(hours=9, minutes=30)
-        hits = subs[(subs["accepted"] >= lo) & (subs["accepted"] < hi)].sort_values("accepted")
-        if hits.empty:
-            continue
-        h = hits.iloc[-1]
-        text = release_text(cik, h["accession"])
-        if text:
-            out.append({"ticker": ticker, "date": ev.date, "accession": h["accession"],
-                        "accepted": h["accepted"], "text": text})
-    return out
+        for acc in filings_in_window(subs, ev.prev_date, ev.date):  # latest first; fall back if no EX-99 text
+            try:
+                text = release_text(cik, acc)
+            except RuntimeError as exc:
+                failed += 1
+                log.warning("%s %s %s: %s", ev.ticker, f"{ev.date:%Y-%m-%d}", acc, exc)
+                break
+            if text:
+                out.append({"ticker": ev.ticker, "date": ev.date, "accession": acc,
+                            "accepted": accepted[acc], "text": text})
+                break
+    return out, failed
 
 
 def main() -> None:
@@ -165,25 +182,33 @@ def main() -> None:
     events["cik"] = events["ticker"].str.upper().map(ciks)
     log.info("%d events, %d tickers, %d with a CIK", len(events), events["ticker"].nunique(),
              events["cik"].notna().sum())
-    events = events.dropna(subset=["cik"])
+    # share classes (GOOG/GOOGL, FOX/FOXA) share a CIK and an 8-K: keep one event per
+    # company-day so one release is not scored and counted twice
+    n_all = len(events)
+    events = (events.dropna(subset=["cik"]).sort_values(["cik", "date", "ticker"])
+              .drop_duplicates(["cik", "date"]))
+    log.info("%d company-day events after dropping duplicate share classes", len(events))
+    (DIR / "candidates.json").write_text(json.dumps({"events": n_all, "with_cik": len(events)}))
 
     rows, failed = [], 0
-    groups = list(events.groupby("ticker"))
+    groups = list(events.groupby("cik"))  # one worker per CIK, so no two threads share a cache file
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(fetch_ticker, tk, int(g["cik"].iloc[0]), g, args.start): tk for tk, g in groups}
+        futures = {pool.submit(fetch_cik, int(cik), g, args.start): cik for cik, g in groups}
         for i, fut in enumerate(futures, 1):
             try:
-                rows.extend(fut.result())
-            except Exception as exc:  # rerun resumes from the caches
-                failed += 1
-                log.warning("%s: %s", futures[fut], exc)
+                got, n_failed = fut.result()
+                rows.extend(got)
+                failed += n_failed
+            except Exception as exc:  # submissions fetch failed; rerun resumes from the caches
+                failed += len(groups[i - 1][1])
+                log.warning("CIK %s: %s", futures[fut], exc)
             if i % 200 == 0:
-                log.info("%d/%d tickers, %d releases, %d failed", i, len(groups), len(rows), failed)
+                log.info("%d/%d companies, %d releases, %d events failed", i, len(groups), len(rows), failed)
     df = pd.DataFrame(rows)
     tmp = DIR / "releases.parquet.tmp"
     df.to_parquet(tmp)
     tmp.rename(DIR / "releases.parquet")
-    log.info("done: %d releases for %d events (%d tickers failed)", len(df), len(events), failed)
+    log.info("done: %d releases for %d events (%d events failed)", len(df), len(events), failed)
 
 
 if __name__ == "__main__":
