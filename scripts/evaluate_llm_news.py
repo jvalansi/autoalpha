@@ -56,8 +56,8 @@ def event_outcomes(bars: pd.DataFrame) -> pd.DataFrame:
     opens = bars.pivot(index="date", columns="ticker", values="Open")
     closes = bars.pivot(index="date", columns="ticker", values="Close")
     bench_oo = equal_weight_benchmark(opens)  # dated d: open(d-1) -> open(d)
-    prev_close = closes.shift(1)
-    oc = (closes / opens.where(opens > 0) - 1).where(prev_close >= BENCHMARK_MIN_PRICE)
+    # same universe as equal_weight_benchmark: opened >= $5 the bar before
+    oc = (closes / opens.where(opens > 0) - 1).where(opens.shift(1) >= BENCHMARK_MIN_PRICE)
     bench_oc = oc.mean(axis=1)
 
     growth = (1 + bench_oo.reindex(opens.index).fillna(0.0)).cumprod()

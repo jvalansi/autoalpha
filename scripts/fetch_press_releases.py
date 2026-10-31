@@ -64,7 +64,8 @@ def fetch_ticker(ticker: str, since: str, key: str) -> int:
         if not rows:
             break
         releases.extend(rows)
-        if min(r.get("date", "") for r in rows) < since:
+        dated = [r["date"] for r in rows if r.get("date")]
+        if dated and min(dated) < since:
             break
     else:
         log.warning("%s: hit %d pages before %s; older releases missing", ticker, MAX_PAGES, since)

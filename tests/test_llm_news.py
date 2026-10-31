@@ -9,14 +9,25 @@ import score_press_releases as sp
 
 
 def test_releases_only_before_reaction_open():
-    rows = [{"date": "2025-01-29 16:30:00", "title": "X Reports Q4 Results"},     # prior evening: in
-            {"date": "2025-01-30 09:29:00", "title": "X Fourth Quarter Update"},  # pre-open: in
-            {"date": "2025-01-30 09:00:00", "title": "X Declares Dividend"},      # not earnings: out
-            {"date": "2025-01-30 09:30:00", "title": "X Quarter Results"},        # at the open: out
-            {"date": "2025-01-20 08:00:00", "title": "X Quarter Results"}]        # outside 4-day window: out
-    cache = {"X": [(pd.Timestamp(r["date"]), r) for r in rows]}
-    got = sp.releases_for("X", pd.Timestamp("2025-01-30"), cache)
-    assert [r["title"] for r in got] == ["X Fourth Quarter Update", "X Reports Q4 Results"]
+    rows = [{"date": "2025-01-29 16:30:00", "title": "X Reports Q4 Results"},              # prior evening: in
+            {"date": "2025-01-30 09:29:00", "title": "X Reports Fourth Quarter Revenue"},  # pre-open: in
+            {"date": "2025-01-30 09:00:00", "title": "X Declares Quarterly Dividend"},     # not results: out
+            {"date": "2025-01-30 08:00:00", "title": "X to Report Q1 Results on May 1"},   # scheduling: out
+            {"date": "2025-01-30 09:30:00", "title": "X Quarter Results"},                 # at the open: out
+            {"date": "2025-01-29 07:00:00", "title": "X Quarter Results"},                 # priced on prev bar: out
+            {"date": "bad", "title": "X Quarter Results"}]                                 # unparseable: skipped
+    stamps = pd.to_datetime([r["date"] for r in rows], errors="coerce")  # same parse as the loader
+    cache = {"X": [(ts, r) for ts, r in zip(stamps, rows) if pd.notna(ts)]}
+    got = sp.releases_for("X", pd.Timestamp("2025-01-30"), pd.Timestamp("2025-01-29"), cache)
+    assert [r["title"] for r in got] == ["X Reports Fourth Quarter Revenue", "X Reports Q4 Results"]
+
+
+def test_results_title_filter():
+    assert sp.is_results_title("CHORD ENERGY REPORTS FIRST QUARTER 2026 RESULTS AND DECLARES BASE DIVIDEND")
+    assert sp.is_results_title("AXON REPORTS Q2 2024 REVENUE OF $504 MILLION")
+    assert not sp.is_results_title("AES RESCHEDULES FOURTH QUARTER & FULL YEAR 2025 FINANCIAL REVIEW CONFERENCE CALL")
+    assert not sp.is_results_title("NVIDIA SETS CONFERENCE CALL FOR THIRD-QUARTER FINANCIAL RESULTS")
+    assert not sp.is_results_title("X ANNOUNCES DATE OF SECOND QUARTER EARNINGS RELEASE")
 
 
 def test_outcomes_are_abnormal_open_to_open_over_horizon(monkeypatch):

@@ -2,9 +2,12 @@
 
 Event = vault reaction bar (days_since_earnings == 0) on or after --since, prior close
 >= $5. Text = the ticker's FMP press releases timestamped in the 4 calendar days before
-the reaction bar's 09:30 ET open (FMP times are ET) whose title looks like an
-earnings release (EARNINGS_TITLE), newest first, at most 3. The filter drops
-third-party wires that mention the ticker and dividend/conference notices.
+the window from the previous bar's 16:00 ET close to the reaction bar's 09:30 ET open
+(FMP times are ET) whose title reads as a results release (EARNINGS_TITLE and not
+SCHEDULING_TITLE), newest first, at most 3. A release issued during or before the
+previous session was already priced on that bar, so the event is mis-dated and dropped.
+The title filter drops dividend notices and earnings-date / conference-call
+announcements; it does not catch another issuer's results in the ticker's feed.
 Everything the model sees was public before the bar we enter at.
 
 The model (gpt-4.1-mini, knowledge cutoff 2024-06-01) must have finished training
@@ -31,8 +34,15 @@ DIR = Path("data/llm_news")
 MODEL = "gpt-4.1-mini-2025-04-14"
 MAX_RELEASES = 3
 MAX_CHARS = 1500
-WINDOW_DAYS = 4
-EARNINGS_TITLE = re.compile(r"RESULTS|EARNINGS|QUARTER|FISCAL|\bQ[1-4]\b|FULL[- ]YEAR", re.I)
+EARNINGS_TITLE = re.compile(
+    r"RESULTS|EARNINGS|\bREPORTS?\b.*\b(QUARTER|Q[1-4]|FISCAL|FULL[- ]YEAR|REVENUE|SALES)\b", re.I)
+SCHEDULING_TITLE = re.compile(
+    r"\b(TO|WILL) (REPORT|ANNOUNCE|RELEASE|HOST|ISSUE|PUBLISH)\b|\bR?E?SCHEDULE|\bDATES?\b|\bSETS\b"
+    r"|CONFERENCE CALL|WEBCAST|\bINVITATION\b|\bNOTICE OF\b", re.I)
+
+
+def is_results_title(title: str) -> bool:
+    return bool(EARNINGS_TITLE.search(title)) and not SCHEDULING_TITLE.search(title)
 
 SYSTEM = "You are a financial analyst. Reply with JSON only."
 PROMPT = """Company ticker: {ticker}
@@ -51,21 +61,23 @@ def load_events(since: str) -> pd.DataFrame:
     df = t.reset_index() if "ticker" not in t.columns else t
     df["date"] = pd.to_datetime(df["date"])
     df = df.drop_duplicates(["date", "ticker"], keep="last").sort_values(["ticker", "date"])
-    df["prev_close"] = df.groupby("ticker")["Close"].shift(1)
+    g = df.groupby("ticker")
+    df["prev_close"], df["prev_date"] = g["Close"].shift(1), g["date"].shift(1)
     ev = df[(df["days_since_earnings"] == 0) & (df["date"] >= since) & (df["prev_close"] >= 5)]
-    return ev[["ticker", "date"]].reset_index(drop=True)
+    return ev[["ticker", "date", "prev_date"]].reset_index(drop=True)
 
 
-def releases_for(ticker: str, date: pd.Timestamp, cache: dict) -> list[dict]:
+def releases_for(ticker: str, date: pd.Timestamp, prev_date: pd.Timestamp, cache: dict) -> list[dict]:
     if ticker not in cache:
         path = DIR / "press" / f"{ticker}.json"
         rows = json.loads(path.read_text()) if path.exists() else []
         cache.clear()  # events are grouped by ticker; keep one ticker in memory
-        cache[ticker] = [(pd.Timestamp(r["date"]), r) for r in rows if r.get("date")]
+        stamps = pd.to_datetime([r.get("date") for r in rows], errors="coerce")
+        cache[ticker] = [(ts, r) for ts, r in zip(stamps, rows) if pd.notna(ts)]
     cutoff = date + pd.Timedelta(hours=9, minutes=30)
-    lo = date - pd.Timedelta(days=WINDOW_DAYS)
+    lo = prev_date + pd.Timedelta(hours=16)
     hits = sorted((x for x in cache[ticker]
-                   if lo <= x[0] < cutoff and EARNINGS_TITLE.search(x[1].get("title") or "")),
+                   if lo <= x[0] < cutoff and is_results_title(x[1].get("title") or "")),
                   key=lambda x: x[0], reverse=True)
     return [r for _, r in hits[:MAX_RELEASES]]
 
@@ -81,7 +93,7 @@ def build(since: str) -> None:
     cache: dict = {}
     lines, kept = [], []
     for ev in events.itertuples():
-        rel = releases_for(ev.ticker, ev.date, cache)
+        rel = releases_for(ev.ticker, ev.date, ev.prev_date, cache)
         if not rel:
             continue
         body = "\n\n".join(f"[{r['date']} ET] {r.get('title', '')}\n{(r.get('text') or '')[:MAX_CHARS]}" for r in rel)
