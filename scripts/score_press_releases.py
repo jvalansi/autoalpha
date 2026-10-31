@@ -1,13 +1,16 @@
 """Score earnings-window press releases with an LLM (OpenAI Batch API).
 
 Event = vault reaction bar (days_since_earnings == 0) on or after --since, prior close
->= $5. Text = the ticker's FMP press releases timestamped in the 4 calendar days before
-the window from the previous bar's 16:00 ET close to the reaction bar's 09:30 ET open
-(FMP times are ET) whose title reads as a results release (EARNINGS_TITLE and not
-SCHEDULING_TITLE), newest first, at most 3. A release issued during or before the
-previous session was already priced on that bar, so the event is mis-dated and dropped.
-The title filter drops dividend notices and earnings-date / conference-call
-announcements; it does not catch another issuer's results in the ticker's feed.
+>= $5. Text = the ticker's FMP press releases timestamped from the previous bar's
+16:00 ET close to the reaction bar's 09:30 ET open (FMP times are ET) whose title
+reads as a results release (EARNINGS_TITLE and not SCHEDULING_TITLE), newest first,
+at most 3; events with no such release are dropped. A release issued during or
+before the previous session is outside the window (it was priced on that bar).
+Known gaps, left as run for the pre-registered test: SCHEDULING_TITLE also drops
+real results titles that mention a conference call / webcast / "year-to-date";
+EARNINGS_TITLE admits non-financial "results" (trial readouts, votes) and sales
+pre-announcements; another issuer's results in the ticker's feed are not filtered;
+prev_date is the ticker's previous vault row, so a missing bar widens the window.
 Everything the model sees was public before the bar we enter at.
 
 The model (gpt-4.1-mini, knowledge cutoff 2024-06-01) must have finished training
