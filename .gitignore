@@ -26,3 +26,4 @@ data/vault_results.json
 .cc-connect/
 data/live/
 data/llm_news/
+data/llm_news_sec/

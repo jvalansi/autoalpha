@@ -18,11 +18,20 @@ Pass (all three, on drift0):
     2. score coefficient > 0 in both halves (split 2025-10-01)
     3. events with score >= 3: mean abnormal return > 0.22% (2 x 11 bps) with t >= 2.0
 
+Second run (--source sec, pre-registered 2026-10-31 after the first run failed):
+full 8-K releases, gpt-4o-mini, reaction bars 2023-11-01 -> 2024-06-28, bars from
+the loop + vault datasets. Its gate is the veto hypothesis the first run suggested,
+on the PEAD-like subset (EPS beat >= 5%, revenue beat, gap >= 3%):
+    1. events with score < 3 have mean abnormal drift0 < 0
+    2. mean drift0 of score >= 3 minus score < 3 has Welch t >= 2.0
+The first run's gate is printed as a secondary result.
+
 Usage:
-    python scripts/evaluate_llm_news.py
+    python scripts/evaluate_llm_news.py [--source sec]
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -34,19 +43,27 @@ import statsmodels.formula.api as smf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autoalpha.evaluation.alpha import BENCHMARK_MIN_PRICE, equal_weight_benchmark
 
-SCORES = Path("data/llm_news/scores.parquet")
+RUNS = {
+    "fmp": {"scores": Path("data/llm_news/scores.parquet"), "split": pd.Timestamp("2025-10-01"),
+            "bars": ["data/vault_data.parquet"]},
+    "sec": {"scores": Path("data/llm_news_sec/scores.parquet"), "split": pd.Timestamp("2024-03-01"),
+            "bars": ["data/loop_data.parquet", "data/vault_data.parquet"]},
+}
 HORIZON = 10
-SPLIT = pd.Timestamp("2025-10-01")
 COST = 0.0022
 MIN_T = 2.0
 OUTCOMES = ["drift0", "intraday", "drift1"]
 
 
-def load_bars(start: pd.Timestamp) -> pd.DataFrame:
-    t = ds.dataset("data/vault_data.parquet").to_table(
-        columns=["date", "ticker", "Open", "Close", "gap_1d", "earnings_surprise", "revenue_surprise"],
-        filter=ds.field("date") >= (start - pd.Timedelta(days=10)).to_pydatetime()).to_pandas()
-    df = t.reset_index() if "ticker" not in t.columns else t
+def load_bars(start: pd.Timestamp, end: pd.Timestamp, paths: list[str]) -> pd.DataFrame:
+    frames = []
+    for path in paths:
+        t = ds.dataset(path).to_table(
+            columns=["date", "ticker", "Open", "Close", "gap_1d", "earnings_surprise", "revenue_surprise"],
+            filter=(ds.field("date") >= (start - pd.Timedelta(days=10)).to_pydatetime())
+            & (ds.field("date") <= (end + pd.Timedelta(days=40)).to_pydatetime())).to_pandas()
+        frames.append(t.reset_index() if "ticker" not in t.columns else t)
+    df = pd.concat(frames, ignore_index=True)
     df["date"] = pd.to_datetime(df["date"])
     return df.drop_duplicates(["date", "ticker"], keep="last").sort_values(["ticker", "date"])
 
@@ -96,10 +113,20 @@ def mean_t(x: pd.Series) -> tuple[float, float, int]:
     return float(x.mean()), float(x.mean() / (x.std(ddof=1) / np.sqrt(len(x)))) if len(x) > 1 else np.nan, len(x)
 
 
+def welch_t(a: pd.Series, b: pd.Series) -> float:
+    a, b = a.dropna(), b.dropna()
+    return float((a.mean() - b.mean()) / np.sqrt(a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b)))
+
+
 def main() -> None:
-    scores = pd.read_parquet(SCORES).dropna(subset=["score"])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", choices=list(RUNS), default="fmp")
+    args = parser.parse_args()
+    run = RUNS[args.source]
+    SPLIT = run["split"]
+    scores = pd.read_parquet(run["scores"]).dropna(subset=["score"])
     scores["date"] = pd.to_datetime(scores["date"])
-    bars = load_bars(scores["date"].min())
+    bars = load_bars(scores["date"].min(), scores["date"].max(), run["bars"])
     df = scores.merge(event_outcomes(bars), on=["ticker", "date"], how="left")
 
     for y in OUTCOMES:
@@ -142,10 +169,20 @@ def main() -> None:
         f"positive in both halves ({b_a * 100:+.3f}, {b_b * 100:+.3f})": b_a > 0 and b_b > 0,
         f"score >= 3 mean > {COST:.2%} with t >= {MIN_T} ({m:.2%}, t {mt:+.2f}, n {n})": m > COST and mt >= MIN_T,
     }
-    print("\nPre-registered gate (drift0):")
-    for k, v in checks.items():
-        print(f"  [{'PASS' if v else 'FAIL'}] {k}")
-    print("VERDICT:", "PASS" if all(checks.values()) else "FAIL")
+    hi, lo = pead.loc[pead["score"] >= 3, "drift0"], pead.loc[pead["score"] < 3, "drift0"]
+    veto = {
+        f"PEAD-like score < 3 mean < 0 ({lo.mean():+.2%}, n {lo.notna().sum()})": lo.mean() < 0,
+        f"PEAD-like score >= 3 minus < 3, Welch t >= {MIN_T} "
+        f"({hi.mean() - lo.mean():+.2%}, t {welch_t(hi, lo):+.2f})": welch_t(hi, lo) >= MIN_T,
+    }
+    gates = [("first-run gate (drift0)", checks), ("veto gate (drift0)", veto)]
+    if args.source == "sec":
+        gates.reverse()  # the veto gate is this run's pre-registered test
+    for i, (name, g) in enumerate(gates):
+        print(f"\n{'Pre-registered' if i == 0 else 'Secondary'} {name}:")
+        for k, v in g.items():
+            print(f"  [{'PASS' if v else 'FAIL'}] {k}")
+    print("VERDICT:", "PASS" if all(gates[0][1].values()) else "FAIL")
 
 
 if __name__ == "__main__":

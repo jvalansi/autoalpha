@@ -20,6 +20,9 @@ Steps:
     python scripts/score_press_releases.py build     # data/llm_news/requests.jsonl + events.parquet
     python scripts/score_press_releases.py submit    # upload + create batch, id -> batch.json
     python scripts/score_press_releases.py collect   # poll; on completion -> scores.parquet
+
+Second run (full 8-K releases from scripts/fetch_sec_releases.py, gpt-4o-mini):
+add --source sec to each step; files go to data/llm_news_sec/.
 """
 from __future__ import annotations
 
@@ -35,6 +38,8 @@ import pyarrow.dataset as ds
 
 DIR = Path("data/llm_news")
 MODEL = "gpt-4.1-mini-2025-04-14"
+SEC_DIR = Path("data/llm_news_sec")
+SEC_MODEL = "gpt-4o-mini-2024-07-18"  # knowledge cutoff 2023-10-01, before the second run's window
 MAX_RELEASES = 3
 MAX_CHARS = 1500
 EARNINGS_TITLE = re.compile(
@@ -91,7 +96,17 @@ def _atomic(path: Path, write) -> None:
     tmp.rename(path)
 
 
-def build(since: str) -> None:
+def _request(ticker: str, date: pd.Timestamp, body: str, model: str) -> str:
+    return json.dumps({
+        "custom_id": f"{ticker}|{date:%Y-%m-%d}", "method": "POST", "url": "/v1/chat/completions",
+        "body": {"model": model, "temperature": 0, "max_tokens": 40,
+                 "response_format": {"type": "json_object"},
+                 "messages": [{"role": "system", "content": SYSTEM},
+                              {"role": "user", "content": PROMPT.format(
+                                  ticker=ticker, date=f"{date:%Y-%m-%d}", releases=body)}]}})
+
+
+def build(since: str, model: str) -> None:
     events = load_events(since)
     cache: dict = {}
     lines, kept = [], []
@@ -100,20 +115,26 @@ def build(since: str) -> None:
         if not rel:
             continue
         body = "\n\n".join(f"[{r['date']} ET] {r.get('title', '')}\n{(r.get('text') or '')[:MAX_CHARS]}" for r in rel)
-        cid = f"{ev.ticker}|{ev.date:%Y-%m-%d}"
-        lines.append(json.dumps({
-            "custom_id": cid, "method": "POST", "url": "/v1/chat/completions",
-            "body": {"model": MODEL, "temperature": 0, "max_tokens": 40,
-                     "response_format": {"type": "json_object"},
-                     "messages": [{"role": "system", "content": SYSTEM},
-                                  {"role": "user", "content": PROMPT.format(
-                                      ticker=ev.ticker, date=f"{ev.date:%Y-%m-%d}", releases=body)}]}}))
+        lines.append(_request(ev.ticker, ev.date, body, model))
         kept.append({"ticker": ev.ticker, "date": ev.date, "n_releases": len(rel),
                      "first_release": rel[-1]["date"], "titles": " || ".join(r.get("title", "") for r in rel)})
+    _write_requests(lines, kept, len(events))
+
+
+def build_sec(model: str) -> None:
+    """Requests from scripts/fetch_sec_releases.py output: one 8-K exhibit 99 per event."""
+    rel = pd.read_parquet(DIR / "releases.parquet")
+    lines = [_request(r.ticker, r.date, f"[{r.accepted:%Y-%m-%d %H:%M} ET] Form 8-K exhibit 99 (earnings release)\n{r.text}",
+                      model) for r in rel.itertuples()]
+    kept = rel[["ticker", "date", "accession", "accepted"]].to_dict("records")
+    _write_requests(lines, kept, len(rel))
+
+
+def _write_requests(lines: list[str], kept: list[dict], n_events: int) -> None:
     _atomic(DIR / "requests.jsonl", lambda t: t.write_text("\n".join(lines) + "\n"))
     _atomic(DIR / "events.parquet", lambda t: pd.DataFrame(kept).to_parquet(t))
     chars = sum(len(l) for l in lines)
-    print(f"{len(events)} events, {len(kept)} with releases ({len(kept) / max(len(events), 1):.0%}); "
+    print(f"{n_events} events, {len(kept)} with releases ({len(kept) / max(n_events, 1):.0%}); "
           f"~{chars / 4 / 1e6:.1f}M input tokens")
 
 
@@ -166,9 +187,17 @@ def main() -> None:
     parser.add_argument("step", choices=["build", "submit", "collect"])
     parser.add_argument("--since", default="2024-07-01")
     parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--source", choices=["fmp", "sec"], default="fmp",
+                        help="sec: second run, full 8-K releases in data/llm_news_sec with gpt-4o-mini")
     args = parser.parse_args()
+    global DIR
+    if args.source == "sec":
+        DIR = SEC_DIR
     if args.step == "build":
-        build(args.since)
+        if args.source == "sec":
+            build_sec(SEC_MODEL)
+        else:
+            build(args.since, MODEL)
     elif args.step == "submit":
         submit()
     else:
