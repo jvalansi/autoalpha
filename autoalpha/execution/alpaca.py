@@ -4,7 +4,10 @@ Order type is market-on-open (`type=market`, `time_in_force=opg`) to match the
 backtest fill model, which fills bar N's signal at bar N+1's open. Alpaca only
 accepts `opg` orders while the market is closed (roughly after the previous
 close and before 9:28 ET), and `opg` does not support fractional shares — hence
-whole-share rounding by default.
+whole-share rounding by default. With `fractional_remainder=True` each order is
+split: the whole shares go as `opg`, the fractional rest as a `day` market order
+(Alpaca accepts fractional only with `day`), which queues for the regular open.
+Names Alpaca doesn't mark `fractionable` keep whole shares only.
 
 Credentials come from the environment:
 
@@ -17,6 +20,7 @@ Point ALPACA_BASE_URL at https://api.alpaca.markets only when going live for rea
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import date
@@ -68,6 +72,7 @@ class AlpacaExecutor(LiveExecutor):
         dry_run: bool = False,
         time_in_force: str = "opg",
         allow_fractional: bool = False,
+        fractional_remainder: bool = False,
         min_order_notional: float = 1.0,
         timeout: float = 15.0,
         max_retries: int = 3,
@@ -76,10 +81,12 @@ class AlpacaExecutor(LiveExecutor):
         # `opg` (market-on-open) cannot be fractional — Alpaca rejects it.
         if time_in_force == "opg" and allow_fractional:
             raise ValueError("Alpaca does not accept fractional shares for opg orders")
+        if fractional_remainder and (time_in_force != "opg" or allow_fractional):
+            raise ValueError("fractional_remainder splits opg orders; use allow_fractional for day orders")
 
         super().__init__(
             overlay=overlay,
-            allow_fractional=allow_fractional,
+            allow_fractional=allow_fractional or fractional_remainder,
             min_order_notional=min_order_notional,
             dry_run=dry_run,
         )
@@ -87,6 +94,8 @@ class AlpacaExecutor(LiveExecutor):
         self._secret_key = secret_key or os.environ.get("ALPACA_SECRET_KEY", "")
         self._base_url = (base_url or os.environ.get("ALPACA_BASE_URL", PAPER_BASE_URL)).rstrip("/")
         self._time_in_force = time_in_force
+        self._fractional_remainder = fractional_remainder
+        self._fractionable: set[str] | None = None
         self._timeout = timeout
         self._max_retries = max_retries
         self._session = session or requests.Session()
@@ -162,7 +171,16 @@ class AlpacaExecutor(LiveExecutor):
         positions = self._request("GET", "/v2/positions")
         return {from_alpaca(p["symbol"]): float(p["qty"]) for p in positions}
 
-    def _place_order(self, symbol: str, qty: float, side: str) -> dict:
+    def fractionable(self) -> set[str]:
+        """Alpaca symbols that accept fractional orders (one assets call per executor)."""
+        if self._fractionable is None:
+            assets = self._request("GET", "/v2/assets", params={"status": "active", "asset_class": "us_equity"})
+            self._fractionable = {a["symbol"] for a in assets if a.get("fractionable")}
+        return self._fractionable
+
+    def _place_order(self, symbol: str, qty: float, side: str, price: float | None = None) -> dict:
+        if self._fractional_remainder:
+            return self._place_split(symbol, qty, side, price)
         payload = {
             "symbol": to_alpaca(symbol),
             "qty": str(qty if self._allow_fractional else int(qty)),
@@ -172,6 +190,33 @@ class AlpacaExecutor(LiveExecutor):
         }
         logger.info("Alpaca order: %s %s x%s (%s)", side, symbol, payload["qty"], self._time_in_force)
         return self._request("POST", "/v2/orders", json=payload)
+
+    def _place_split(self, symbol: str, qty: float, side: str, price: float | None) -> dict:
+        """Whole shares as opg, the fractional rest as a day market order.
+
+        A rejected leg is recorded, not raised: one unfractionable or below-minimum
+        remainder must not stop the rest of the book from being reconciled."""
+        whole = math.floor(qty)  # never round up: a sell must not exceed the held qty
+        rest = round(qty - whole, 9)
+        sym = to_alpaca(symbol)
+        if rest > 0 and sym not in self.fractionable():
+            rest = 0.0
+        # buys below the broker minimum are skipped; sells are always sent so a
+        # fractional remainder can be closed out instead of lingering as dust
+        if side == "buy" and price is not None and rest * price < self._min_order_notional:
+            rest = 0.0
+        legs = {}
+        for leg, q, tif in (("opg", whole, "opg"), ("day", rest, "day")):
+            if q <= 0:
+                continue
+            payload = {"symbol": sym, "qty": str(q), "side": side, "type": "market", "time_in_force": tif}
+            logger.info("Alpaca order: %s %s x%s (%s)", side, symbol, q, tif)
+            try:
+                legs[leg] = self._request("POST", "/v2/orders", json=payload)
+            except BrokerError as exc:
+                logger.warning("Alpaca rejected %s leg for %s: %s", leg, symbol, exc)
+                legs[leg] = {"error": str(exc)}
+        return legs
 
     # ------------------------------------------------------------------
     # Housekeeping
@@ -192,4 +237,6 @@ class AlpacaExecutor(LiveExecutor):
                 hold: frozenset[str] = frozenset()) -> None:
         # Reconcile against a clean order book so we never stack duplicate opg orders.
         self.cancel_open_orders()
+        if self._fractional_remainder:
+            self.fractionable()  # fail before the first order, not halfway through the book
         super().execute(targets, bar_date, prices, hold)

@@ -449,6 +449,14 @@ def main() -> None:
         alpha_line += f"\nFF5 alpha: n/a — {ff5.get('reason', 'unavailable')}"
 
     lines = [header, summary, alpha_line]
+    try:  # the small-account line must never cost the whole report
+        from run_live_small import report_line as small_account_line
+        small = small_account_line(signal_results)
+    except Exception as exc:
+        log.warning("small-account report line failed: %s", exc)
+        small = f"*Small account:* report line failed — {type(exc).__name__}"
+    if small:
+        lines.append(small)
 
     if new_signal_rows:
         new_lines = ["*New signals tonight:*"]

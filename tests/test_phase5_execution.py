@@ -157,7 +157,7 @@ class FakeBroker:
             def current_positions(_self):
                 return dict(positions or {})
 
-            def _place_order(_self, symbol, qty, side):
+            def _place_order(_self, symbol, qty, side, price=None):
                 _self.placed.append((symbol, qty, side))
                 return {"id": f"{symbol}-{side}"}
 
@@ -317,6 +317,45 @@ class TestAlpacaExecutor:
             "symbol": "AAPL", "qty": "10", "side": "buy",
             "type": "market", "time_in_force": "opg",
         }
+
+    def test_fractional_remainder_splits_opg_and_day(self):
+        from autoalpha.execution.alpaca import AlpacaExecutor
+
+        sent = []
+
+        class _Resp:
+            status_code = 200
+            content = b"x"
+
+            def __init__(self, body):
+                self._body = body
+
+            def json(self):
+                return self._body
+
+        class _Session:
+            def request(self, method, url, **kwargs):
+                if url.endswith("/v2/assets"):
+                    return _Resp([{"symbol": "AAPL", "fractionable": True},
+                                  {"symbol": "BRK.B", "fractionable": False}])
+                sent.append(kwargs["json"])
+                return _Resp({"id": str(len(sent))})
+
+        ex = AlpacaExecutor(api_key="k", secret_key="s", session=_Session(), fractional_remainder=True)
+        ex._place_order("AAPL", 3.25, "buy", price=200.0)   # 3 opg + 0.25 day ($50)
+        ex._place_order("BRK-B", 2.7, "buy", price=480.0)   # not fractionable: 2 opg only
+        ex._place_order("AAPL", 0.004, "buy", price=200.0)  # $0.80 remainder: below $1, skipped
+        ex._place_order("AAPL", 0.004, "sell", price=200.0) # sells always sent, so dust can close
+        ex._place_order("AAPL", 2.999999999, "sell")         # never rounds a sell up past the holding
+        assert [(o["symbol"], o["qty"], o["time_in_force"], o["side"]) for o in sent] == [
+            ("AAPL", "3", "opg", "buy"), ("AAPL", "0.25", "day", "buy"),
+            ("BRK.B", "2", "opg", "buy"), ("AAPL", "0.004", "day", "sell"),
+            ("AAPL", "2", "opg", "sell"), ("AAPL", "0.999999999", "day", "sell")]
+
+    def test_fractional_remainder_requires_opg(self):
+        from autoalpha.execution.alpaca import AlpacaExecutor
+        with pytest.raises(ValueError):
+            AlpacaExecutor(api_key="k", secret_key="s", time_in_force="day", fractional_remainder=True)
 
     def test_symbols_map_between_yfinance_and_alpaca(self):
         # 2026-10-01: MKC-V in a snapshot request → 400 "invalid symbol", crashing the run

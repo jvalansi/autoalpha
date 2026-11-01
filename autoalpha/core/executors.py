@@ -217,8 +217,9 @@ class LiveExecutor(Executor):
         """Open positions as {ticker: signed share quantity}."""
 
     @abstractmethod
-    def _place_order(self, symbol: str, qty: float, side: str) -> dict:
-        """Submit a single order. side is 'buy' or 'sell'. Returns broker response."""
+    def _place_order(self, symbol: str, qty: float, side: str, price: float | None = None) -> dict:
+        """Submit a single order. side is 'buy' or 'sell'; price is the sizing price
+        (None when closing a position with no quote). Returns broker response."""
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -272,7 +273,7 @@ class LiveExecutor(Executor):
             logger.info("DRY RUN — would %s %s x%s", side, symbol, qty)
             record["dry_run"] = True
         else:
-            record["response"] = self._place_order(symbol, qty, side)
+            record["response"] = self._place_order(symbol, qty, side, price)
         self._orders.append(record)
 
     # ------------------------------------------------------------------
