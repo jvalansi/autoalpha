@@ -1,6 +1,8 @@
 """Phase 3 CPCV validation: runs each seed strategy and reports Sharpe stats."""
 from __future__ import annotations
 
+import subprocess
+
 import os
 import sys
 import logging
@@ -15,6 +17,8 @@ if os.path.exists(_env_file):
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 os.environ.setdefault(k.strip(), v.strip())
+if os.environ.get("FMP_API_KEY", "").strip('"').startswith("op://"):  # 1Password reference
+    os.environ["FMP_API_KEY"] = subprocess.run(["/home/ubuntu/bin/secret", "FMP_API_KEY"], capture_output=True, text=True, check=True).stdout
 
 import pandas as pd
 

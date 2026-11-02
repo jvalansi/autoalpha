@@ -8,7 +8,7 @@ ENV_FILE="/home/ubuntu/.env"
 exec >> "/tmp/autoalpha_live_small_$(date -u +%Y%m%d).log" 2>&1
 # Only the vars this job needs (the shared .env holds unrelated secrets)
 for var in ALPACA_10K_API_KEY ALPACA_10K_SECRET_KEY ALPACA_10K_BASE_URL; do
-    value=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+    value=$(/home/ubuntu/bin/secret "$var" "$ENV_FILE")  # resolves 1Password op:// references
     [ -n "$value" ] && export "$var"="$value"
 done
 cd "$REPO_DIR"

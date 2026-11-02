@@ -27,7 +27,7 @@ echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 # claude CLI subscription auth).
 if [ -f "$ENV_FILE" ]; then
     for var in DISCORD_BOT_TOKEN FMP_API_KEY ALPACA_10K_API_KEY ALPACA_10K_SECRET_KEY ALPACA_10K_BASE_URL; do
-        value=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+        value=$(/home/ubuntu/bin/secret "$var" "$ENV_FILE")  # resolves 1Password op:// references
         [ -n "$value" ] && export "$var"="$value"
     done
 fi
