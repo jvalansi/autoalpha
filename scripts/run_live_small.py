@@ -23,6 +23,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -176,6 +177,12 @@ def main() -> None:
         state["last_orders"] = len(orders)
         state["last_rejected"] = rejected
         save_state(state)
+        # Posted here rather than by cc-connect: the cron fires twice a day (DST) and is
+        # muted, so only the run that actually trades notifies.
+        msg = (f"**autoalpha $10k small account ({'paper' if executor.is_paper else 'REAL MONEY'}) — {today.date()}**\n"
+               f"{SIGNAL}: {len(targets)} names, equity ${equity:,.0f} · {len(orders)} orders, {rejected} rejected legs")
+        if os.environ.get("DISCORD_BOT_TOKEN"):
+            subprocess.run([sys.executable, str(Path(__file__).with_name("post_to_discord.py"))], input=msg, text=True, check=False)
 
 
 if __name__ == "__main__":

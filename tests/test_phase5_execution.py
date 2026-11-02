@@ -294,6 +294,27 @@ class TestAlpacaExecutor:
             ex.account_equity()
         assert len(calls) == 1  # no retry on a 4xx rejection
 
+    def test_rate_limit_is_retried(self, monkeypatch):
+        from autoalpha.execution import alpaca
+        monkeypatch.setattr(alpaca.time, "sleep", lambda s: None)
+
+        class _Resp:
+            def __init__(self, code):
+                self.status_code, self.text, self.content, self.headers = code, "rate limit exceeded", b"{}", {}
+
+            def json(self):
+                return {"equity": "100"}
+
+        codes = [429, 429, 200]
+
+        class _Session:
+            def request(self, method, url, **kwargs):
+                return _Resp(codes.pop(0))
+
+        ex = alpaca.AlpacaExecutor(api_key="k", secret_key="s", session=_Session())
+        assert ex.account_equity() == 100.0  # a 429 is the broker throttling, not rejecting
+        assert not codes
+
     def test_order_payload_is_market_on_open(self):
         from autoalpha.execution.alpaca import AlpacaExecutor
 

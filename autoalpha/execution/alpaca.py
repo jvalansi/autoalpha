@@ -127,7 +127,8 @@ class AlpacaExecutor(LiveExecutor):
 
         4xx responses are the broker rejecting us (bad symbol, insufficient
         buying power, market not accepting opg orders) — retrying those just
-        repeats the rejection, so they raise immediately.
+        repeats the rejection, so they raise immediately. 429 (throttling) is
+        the exception: it waits for the rate-limit window and retries.
         """
         url = f"{self._base_url}{path}"
         last_exc: Exception | None = None
@@ -147,13 +148,24 @@ class AlpacaExecutor(LiveExecutor):
             if resp.status_code < 400:
                 return resp.json() if resp.content else {}
 
-            if 400 <= resp.status_code < 500:
+            if 400 <= resp.status_code < 500 and resp.status_code != 429:
                 raise BrokerError(f"Alpaca {method} {path} → {resp.status_code}: {resp.text[:300]}")
 
+            # 429 is throttling (200 requests/min), not a rejection: the request was
+            # not processed, so retrying is safe. Wait for the window to reset.
+            delay = 2 ** attempt
+            if resp.status_code == 429:
+                try:
+                    reset = float(resp.headers.get("X-RateLimit-Reset", ""))
+                    delay = min(max(reset - time.time(), 1.0), 60.0)
+                except ValueError:
+                    delay = 2 ** (attempt + 2)
             last_exc = BrokerError(f"{resp.status_code}: {resp.text[:300]}")
-            logger.warning("Alpaca %s %s → %d (attempt %d/%d)",
-                           method, path, resp.status_code, attempt + 1, self._max_retries)
-            time.sleep(2 ** attempt)
+            if attempt == self._max_retries - 1:
+                break
+            logger.warning("Alpaca %s %s → %d (attempt %d/%d), retrying in %.0fs",
+                           method, path, resp.status_code, attempt + 1, self._max_retries, delay)
+            time.sleep(delay)
 
         raise BrokerError(f"Alpaca {method} {path} failed after {self._max_retries} attempts: {last_exc}")
 
