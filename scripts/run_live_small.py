@@ -111,7 +111,7 @@ def report_line(signal_results: list[dict]) -> str | None:
     kind = "paper" if state.get("paper", True) else "REAL MONEY"
     return (f"*Small account ($10k {kind}, {state['signal']}):* equity ${equity:,.0f} ({acct:+.2%}) "
             f"vs simulated {sim_txt} since {state['start_date']} · last run {state.get('last_run')}: "
-            f"{state.get('last_orders', 0)} orders, {state.get('last_rejected', 0)} rejected legs")
+            f"{state.get('last_targets', 0)} names, {state.get('last_orders', 0)} orders, {state.get('last_rejected', 0)} rejected legs")
 
 
 def main() -> None:
@@ -156,7 +156,8 @@ def main() -> None:
         # Mark the attempt before the first order: a run that dies partway must not be
         # repeated by the second cron fire, which could stack orders on top of ones
         # whose cancellation hasn't settled. A partial book is fixed by the next day's run.
-        state["last_run"] = str(today.date())
+        # Counts reset with it, so a dead run can't report the previous day's as its own.
+        state.update(last_run=str(today.date()), last_targets=0, last_orders=0, last_rejected=0)
         save_state(state)
     executor.execute(targets, today.date(), prices)
     # orders whose split dropped every leg (sub-share delta on an unfractionable name) never reached the broker
@@ -174,14 +175,14 @@ def main() -> None:
         state.setdefault("start_equity", equity)
         state["signal"] = SIGNAL
         state["paper"] = executor.is_paper
+        state["last_targets"] = len(targets)
         state["last_orders"] = len(orders)
         state["last_rejected"] = rejected
         save_state(state)
-        # Posted here rather than by cc-connect: the cron fires twice a day (DST) and is
-        # muted, so only the run that actually trades notifies.
+        # Routine runs are covered by the nightly report; rejected legs or an empty book alert now.
         msg = (f"**autoalpha $10k small account ({'paper' if executor.is_paper else 'REAL MONEY'}) — {today.date()}**\n"
                f"{SIGNAL}: {len(targets)} names, equity ${equity:,.0f} · {len(orders)} orders, {rejected} rejected legs")
-        if os.environ.get("DISCORD_BOT_TOKEN"):
+        if (rejected or not targets) and os.environ.get("DISCORD_BOT_TOKEN"):
             subprocess.run([sys.executable, str(Path(__file__).with_name("post_to_discord.py"))], input=msg, text=True, check=False)
 
 

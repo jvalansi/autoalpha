@@ -42,7 +42,7 @@ import yfinance as yf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autoalpha.data.event_features import FALLBACK_ETF, SECTOR_ETF_MAP, fetch_earnings_calendar
 from autoalpha.execution.alpaca import AlpacaExecutor
-from autoalpha.execution.risk import RiskGuard
+from autoalpha.execution.risk import RiskGuard, RiskStatus
 from autoalpha.strategies.pead_et import ATR_PERIOD, MAX_POSITIONS, EarningsTraderPEAD
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
@@ -241,6 +241,21 @@ def features(tickers: list[str], bars: dict[str, pd.DataFrame], sectors: dict[st
     return pd.DataFrame.from_dict(rows, orient="index", columns=cols)  # keep columns on no-candidate days
 
 
+def report_line(session: str) -> str | None:
+    """Nightly-report section: the morning run's summary, as of the open, flagged if it
+    predates `session` (a muted cron that never fired or fell outside the window is silent)."""
+    state = load_state()
+    if not state.get("last_report"):
+        return None
+    stale = " ⚠️ DID NOT RUN " + session if state["last_run"] < session else ""
+    return f"*Live PEAD (last run {state['last_run']}, at the open):*{stale} " + "\n".join(state["last_report"])
+
+
+def alert_needed(risk: RiskStatus, notes: list[str]) -> bool:
+    """A routine day waits for the nightly report; a halt or a problem note can't."""
+    return not risk.entries_allowed or bool(notes)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="compute and log orders without placing them")
@@ -340,8 +355,13 @@ def main() -> None:
         t: {**state["positions"].get(t, {"entry_date": str(today.date()), "entry_price": prices.get(t)}),
             "stop": kept[t]["stop"], "days": kept[t]["days"]}
         for t in targets}
+    lines = [risk.line(),
+             f"Candidates reacting today: {len(rx)} | entries: {', '.join(new) or 'none'} | "
+             f"exits: {', '.join(exits) or 'none'}",
+             f"Holding ({len(targets)}/{MAX_POSITIONS}): {', '.join(sorted(targets)) or 'none'}", *notes]
     if not args.dry_run:
         state["last_run"] = str(today.date())
+        state["last_report"] = lines
         save_state(state)
         with ORDERS_LOG.open("a") as f:
             for o in executor.orders():
@@ -354,13 +374,9 @@ def main() -> None:
                               "exits": exits, "holding": sorted(targets), "fills": [
                                   {k: o.get(k) for k in ("symbol", "qty", "side", "price")} for o in executor.orders()]}}) + "\n")
 
-    lines = [f"**autoalpha live PEAD — {today.date()}**{' (dry run)' if args.dry_run else ''}", risk.line(),
-             f"Candidates reacting today: {len(rx)} | entries: {', '.join(new) or 'none'} | "
-             f"exits: {', '.join(exits) or 'none'}",
-             f"Holding ({len(targets)}/{MAX_POSITIONS}): {', '.join(sorted(targets)) or 'none'}", *notes]
-    msg = "\n".join(lines)
+    msg = "\n".join([f"**autoalpha live PEAD — {today.date()}**{' (dry run)' if args.dry_run else ''}", *lines])
     log.info("\n%s", msg)
-    if not args.dry_run and os.environ.get("DISCORD_BOT_TOKEN"):
+    if alert_needed(risk, notes) and not args.dry_run and os.environ.get("DISCORD_BOT_TOKEN"):
         subprocess.run([sys.executable, "scripts/post_to_discord.py"], input=msg, text=True, check=False)
 
 

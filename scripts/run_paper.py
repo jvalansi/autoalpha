@@ -457,6 +457,14 @@ def main() -> None:
         small = f"*Small account:* report line failed — {type(exc).__name__}"
     if small:
         lines.append(small)
+    try:  # same for the live PEAD section
+        from run_live_pead import report_line as live_pead_line
+        pead = live_pead_line(paper_end_date.isoformat())
+    except Exception as exc:
+        log.warning("live PEAD report section failed: %s", exc)
+        pead = f"*Live PEAD:* report section failed — {type(exc).__name__}"
+    if pead:
+        lines.append(pead)
 
     if new_signal_rows:
         new_lines = ["*New signals tonight:*"]

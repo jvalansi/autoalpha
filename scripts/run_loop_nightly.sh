@@ -4,7 +4,7 @@
 #   2. Run 50 iterations of the LLM research loop (so new signals appear in tonight's report)
 #   3. Run paper trading
 #   3b. Update Darwinian signal weights from the paper book's alpha returns
-#   4. Post the daily report directly to the autoalpha Discord channel via the
+#   4. Post the daily report (the only routine autoalpha post) directly to the autoalpha Discord channel via the
 #      Bot REST API (no cc-connect session — that posts into a thread, and the
 #      auto-upgrade path in cron is also flaky).
 set -euo pipefail
@@ -19,6 +19,13 @@ LAST_POSTED_FILE="$REPO_DIR/data/.last_posted_paper_end"
 ENV_FILE="/home/ubuntu/.env"
 
 exec >> "$LOG" 2>&1
+
+# The nightly report is the day's only routine notification, so a step that can cost
+# it must alert on its own (the cron is muted).
+alert() {
+    echo "**autoalpha nightly: $1** — no daily report may follow; see $LOG" \
+        | "$PYTHON" scripts/post_to_discord.py || echo "WARNING: Discord alert failed"
+}
 
 echo "=== autoalpha nightly: $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 
@@ -41,8 +48,10 @@ cd "$REPO_DIR"
 # job until the 180-min cron limit kills it as `exit -1` (as happened 2026-07-14).
 # `|| echo` only catches a non-zero exit, not a hang — the timeout is what caps a hang.
 echo "--- Step 1: Update vault with latest bars ---"
-timeout --kill-after=30 900 "$PYTHON" scripts/update_vault.py \
-    || echo "WARNING: vault update failed/timed out (non-fatal)"
+if ! timeout --kill-after=30 900 "$PYTHON" scripts/update_vault.py; then
+    echo "WARNING: vault update failed/timed out (non-fatal)"
+    alert "vault update FAILED"
+fi
 
 echo "--- Step 2: Research loop — PAUSED 2026-08-27 ---"
 # Paused deliberately. The loop admits on PSR > 0.65 vs a fixed market
@@ -60,8 +69,13 @@ echo "SKIPPED: research loop paused pending admission-gate rework"
 #     --data data/loop_data.parquet || echo "WARNING: research loop failed/timed out (non-fatal)"
 
 echo "--- Step 3: Paper trading update (includes signals found tonight) ---"
-timeout --kill-after=30 900 "$PYTHON" scripts/run_paper.py \
-    || echo "WARNING: paper trading failed/timed out (non-fatal)"
+# Clear last night's report: paper_end is written before the report, so a run dying
+# between them would otherwise re-post the old report as the new day's.
+rm -f "$REPORT_FILE"
+if ! timeout --kill-after=30 900 "$PYTHON" scripts/run_paper.py; then
+    echo "WARNING: paper trading failed/timed out (non-fatal)"
+    alert "paper run FAILED"
+fi
 
 echo "--- Step 3b: Darwinian weight update ---"
 # Must run after paper trading: it reads data/paper_pnl.json for the per-signal

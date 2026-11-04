@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # $10k small account pre-market — cc-connect cron fires at 12:15 and 13:15 UTC Mon-Fri so
 # one lands in 08:00-09:25 ET across DST; run_live_small.py exits outside that window,
-# on non-trading days, and if it already ran today. The cron is muted; the script
-# posts its own Discord message only when it trades.
+# on non-trading days, and if it already ran today. The cron is muted; the nightly
+# report covers routine runs, and only failures, rejected legs and an empty book post to Discord here.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="/home/ubuntu/.env"
